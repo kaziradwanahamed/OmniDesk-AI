@@ -1,0 +1,268 @@
+@import "tailwindcss";
+
+/* Class-based dark mode (driven by next-themes attribute="class"). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ============================================================================
+   Semantic design tokens. Raw values live on :root (light) and .dark, and are
+   mapped into Tailwind's color system via @theme inline so utilities like
+   bg-canvas, bg-surface, border-subtle, text-primary, bg-accent, text-openai
+   all work. Dark is the default theme (see layout.tsx defaultTheme="dark").
+   ============================================================================ */
+:root {
+  color-scheme: light;
+
+  --canvas: #f6f7f9;
+  --surface: #ffffff;
+  --elevated: #ffffff;
+
+  --subtle: #e5e7eb;
+  --strong: #d1d5db;
+
+  --text-primary: #16191d;
+  --text-secondary: #545a62;
+  --text-tertiary: #868d95;
+
+  --accent: #4f46e5;
+  --accent-fg: #ffffff;
+
+  --success: #15803d;
+  --warning: #b45309;
+  --danger: #b91c1c;
+  --info: #1d4ed8;
+
+  --openai: #0e9f78;
+  --anthropic: #c2410c;
+  --gemini: #2563eb;
+}
+
+.dark {
+  color-scheme: dark;
+
+  --canvas: #0a0c0e;
+  --surface: #121619;
+  --elevated: #1a1f23;
+
+  --subtle: #252b31;
+  --strong: #343b43;
+
+  --text-primary: #e8eaec;
+  --text-secondary: #a4abb3;
+  --text-tertiary: #6d757d;
+
+  --accent: #818cf8;
+  --accent-fg: #0a0c0e;
+
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --danger: #f87171;
+  --info: #60a5fa;
+
+  --openai: #2dd4a7;
+  --anthropic: #e8825e;
+  --gemini: #6ea8fe;
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-elevated: var(--elevated);
+  --color-subtle: var(--subtle);
+  --color-strong: var(--strong);
+  --color-primary: var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-tertiary: var(--text-tertiary);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+  --color-openai: var(--openai);
+  --color-anthropic: var(--anthropic);
+  --color-gemini: var(--gemini);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--subtle);
+  }
+  body {
+    background-color: var(--canvas);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--accent) 28%, transparent);
+  }
+  /* Thin, theme-aware scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--strong) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: var(--strong);
+    border-radius: 9999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+}
+
+/* ============================================================================
+   Markdown code highlighting (rehype-highlight / highlight.js token classes).
+   A compact, theme-aware palette that reads on both surface backgrounds.
+   ============================================================================ */
+.hljs {
+  color: var(--text-primary);
+  background: transparent;
+}
+.hljs-comment,
+.hljs-quote {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-type {
+  color: #c084fc;
+}
+.hljs-string,
+.hljs-attr,
+.hljs-template-tag,
+.hljs-addition {
+  color: #34d399;
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet {
+  color: #fbbf24;
+}
+.hljs-title,
+.hljs-section,
+.hljs-function .hljs-title,
+.hljs-name {
+  color: #60a5fa;
+}
+.hljs-attribute,
+.hljs-variable,
+.hljs-property {
+  color: #f87171;
+}
+.hljs-built_in,
+.hljs-class .hljs-title,
+.hljs-meta {
+  color: #22d3ee;
+}
+.hljs-deletion {
+  color: #f87171;
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
+
+/* ============================================================================
+   Motion — fast, purposeful (150–200ms). Used by Radix overlays via class.
+   ============================================================================ */
+@keyframes omni-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes omni-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes omni-dialog-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+@keyframes omni-slide-right {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+@keyframes omni-slide-left {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+@keyframes omni-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+.omni-pop {
+  animation: omni-pop-in 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.omni-overlay {
+  animation: omni-fade-in 150ms ease-out;
+}
+.omni-dialog {
+  animation: omni-dialog-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.omni-sheet-right {
+  animation: omni-slide-right 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.omni-sheet-left {
+  animation: omni-slide-left 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.omni-cursor::after {
+  content: "";
+  display: inline-block;
+  width: 0.5ch;
+  height: 1em;
+  margin-left: 1px;
+  transform: translateY(2px);
+  background-color: var(--accent);
+  animation: omni-blink 1s step-start infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .omni-pop,
+  .omni-overlay,
+  .omni-dialog,
+  .omni-sheet-right,
+  .omni-sheet-left,
+  .omni-cursor::after {
+    animation: none;
+  }
+}
