@@ -13,6 +13,10 @@ venv/
 .env.local
 .env.*.local
 
+# --- Uploaded project files (backend upload root; never commit user uploads) ---
+backend/var/
+var/uploads/
+
 # --- Node / Next.js ---
 node_modules/
 frontend/.next/

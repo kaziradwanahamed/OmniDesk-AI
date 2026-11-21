@@ -4,6 +4,7 @@ import * as React from "react";
 import { useEffect, useState } from "react";
 import {
   Check,
+  FileText,
   Layers,
   Loader2,
   NotebookPen,
@@ -70,6 +71,8 @@ function omittedLabel(item: Record<string, unknown>): string {
   if (item.type === "summary") return "Summary (trimmed to fit budget)";
   if (item.type === "decisions") return "Decisions (trimmed to fit budget)";
   if (item.type === "status") return "Project status (trimmed to fit budget)";
+  if (item.type === "file_excerpt")
+    return `File excerpt (${item.file ?? "file"}, chunk ${Number(item.chunk_index ?? 0) + 1}) trimmed`;
   return String(item.type ?? "item");
 }
 
@@ -353,6 +356,51 @@ export function LiveContextPanel({
           ) : null}
         </Section>
 
+        {/* L5 — retrieved file excerpts (pinned + query-matched) */}
+        <Section
+          icon={FileText}
+          title={
+            preview && preview.fileExcerpts.length
+              ? `File Excerpts (${preview.fileExcerpts.length})`
+              : "File Excerpts"
+          }
+        >
+          {preview && preview.fileExcerpts.length ? (
+            <ul className="space-y-1.5">
+              {preview.fileExcerpts.map((e, i) => (
+                <li
+                  key={`${e.filename}:${e.chunkIndex}:${i}`}
+                  className="flex items-center justify-between gap-2 text-xs"
+                >
+                  <span className="flex min-w-0 items-center gap-1.5 text-secondary">
+                    <FileText className="h-3 w-3 shrink-0 text-tertiary" />
+                    <span className="truncate font-mono">
+                      {e.filename} · chunk {e.chunkIndex + 1}
+                    </span>
+                    <Badge
+                      className={
+                        e.pinned
+                          ? "border-accent/40 text-accent"
+                          : "border-subtle text-tertiary"
+                      }
+                    >
+                      {e.pinned ? "pinned" : "matched"}
+                    </Badge>
+                  </span>
+                  <span className="shrink-0 font-mono text-tertiary">
+                    ~{e.tokenEst.toLocaleString()}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-tertiary">
+              No file excerpts. Pin a project file (Files tab) to always ground
+              answers in it, or they surface here when relevant to your message.
+            </p>
+          )}
+        </Section>
+
         <Section icon={Layers} title="Token Budget">
           {loading ? (
             <div className="flex justify-center py-3">
@@ -409,7 +457,8 @@ export function LiveContextPanel({
                 </div>
               ) : null}
               <p className="mt-2 text-[11px] text-tertiary">
-                Conservative estimate. File excerpts (layer 5) arrive in Phase 9.
+                Conservative estimate across all 8 layers (L1–L8), including any
+                retrieved file excerpts (L5).
               </p>
             </>
           ) : (

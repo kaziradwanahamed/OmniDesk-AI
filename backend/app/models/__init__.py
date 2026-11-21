@@ -1,6 +1,7 @@
 """SQLAlchemy ORM models. Importing this package registers all tables on Base."""
 
 from app.db.base import Base
+from app.models.attachment import Attachment, AttachmentChunk
 from app.models.context_snapshot import ContextSnapshot
 from app.models.context_summary import ConversationSummary
 from app.models.conversation import Conversation, Message
@@ -28,4 +29,6 @@ __all__ = [
     "ContextSnapshot",
     "ConversationSummary",
     "MessageGroup",
+    "Attachment",
+    "AttachmentChunk",
 ]

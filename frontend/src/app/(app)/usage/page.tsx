@@ -1,25 +1,82 @@
-import { Info } from "lucide-react";
-import { PageHeader } from "@/components/layout/page-header";
-import { Card } from "@/components/ui/card";
+"use client";
 
-const KPIS = [
-  { label: "Total tokens", value: "N/A" },
-  { label: "Input tokens", value: "N/A" },
-  { label: "Output tokens", value: "N/A" },
-  { label: "Estimated cost", value: "Not configured" },
-];
+import { useEffect, useState } from "react";
+import { Info, Loader2, RefreshCw } from "lucide-react";
+import { PageHeader } from "@/components/layout/page-header";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { ModelTag } from "@/components/shared/provider-badge";
+import { api, ApiError, type UsageSummaryUI } from "@/lib/api-client";
+
+function fmt(n: number): string {
+  return n.toLocaleString();
+}
 
 export default function UsagePage() {
+  const [usage, setUsage] = useState<UsageSummaryUI | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const u = await api.getUsage();
+        if (active) setUsage(u);
+      } catch (e) {
+        if (active)
+          setError(e instanceof ApiError ? e.message : "Could not load usage.");
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [reloadKey]);
+
+  const kpis = [
+    { label: "Total tokens", value: usage ? fmt(usage.totalTokens) : "N/A" },
+    { label: "Input tokens", value: usage ? fmt(usage.inputTokens) : "N/A" },
+    { label: "Output tokens", value: usage ? fmt(usage.outputTokens) : "N/A" },
+    { label: "Estimated cost", value: "Not configured" },
+  ];
+  const rows = usage?.byModel ?? [];
+
   return (
     <>
       <PageHeader
         title="Usage"
         description="Verified provider metadata only"
+        actions={
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => setReloadKey((k) => k + 1)}
+            disabled={loading}
+          >
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+            Refresh
+          </Button>
+        }
       />
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-5xl space-y-5 px-4 py-6">
+          {error ? (
+            <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+              {error}
+            </div>
+          ) : null}
+
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {KPIS.map((k) => (
+            {kpis.map((k) => (
               <Card key={k.label} className="p-4">
                 <p className="text-xs font-medium text-tertiary">{k.label}</p>
                 <p className="mt-1 font-mono text-xl font-semibold text-primary">
@@ -44,7 +101,7 @@ export default function UsagePage() {
               <table className="w-full border-collapse text-sm">
                 <thead className="bg-elevated">
                   <tr>
-                    {["Provider", "Model", "Input", "Output", "Total", "Est. cost"].map(
+                    {["Provider / Model", "Requests", "Input", "Output", "Total", "Est. cost"].map(
                       (h) => (
                         <th
                           key={h}
@@ -57,14 +114,45 @@ export default function UsagePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr>
-                    <td
-                      colSpan={6}
-                      className="px-3 py-10 text-center text-sm text-tertiary"
-                    >
-                      No usage recorded yet.
-                    </td>
-                  </tr>
+                  {loading ? (
+                    <tr>
+                      <td colSpan={6} className="px-3 py-10 text-center">
+                        <Loader2 className="mx-auto h-5 w-5 animate-spin text-tertiary" />
+                      </td>
+                    </tr>
+                  ) : rows.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={6}
+                        className="px-3 py-10 text-center text-sm text-tertiary"
+                      >
+                        No usage recorded yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    rows.map((r, i) => (
+                      <tr key={`${r.provider}:${r.modelId}:${i}`}>
+                        <td className="border-b border-subtle px-3 py-2">
+                          <ModelTag provider={r.provider} modelId={r.modelId ?? "—"} />
+                        </td>
+                        <td className="border-b border-subtle px-3 py-2 font-mono text-tertiary">
+                          {fmt(r.requestCount)}
+                        </td>
+                        <td className="border-b border-subtle px-3 py-2 font-mono text-secondary">
+                          {fmt(r.inputTokens)}
+                        </td>
+                        <td className="border-b border-subtle px-3 py-2 font-mono text-secondary">
+                          {fmt(r.outputTokens)}
+                        </td>
+                        <td className="border-b border-subtle px-3 py-2 font-mono text-primary">
+                          {fmt(r.totalTokens)}
+                        </td>
+                        <td className="border-b border-subtle px-3 py-2 text-tertiary">
+                          N/A
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>

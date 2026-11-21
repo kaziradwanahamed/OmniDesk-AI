@@ -169,6 +169,7 @@ async def send_message(
     provider: str | None = None,
     model_id: str | None = None,
     retry_message_id: uuid.UUID | None = None,
+    include_file_ids: list[uuid.UUID] | None = None,
 ) -> tuple[Message, Message]:
     """Non-streaming write-ahead send. Misconfig fails before persisting; provider
     errors after the user message is committed preserve history. On retry the
@@ -188,6 +189,7 @@ async def send_message(
         target_model_id=model_id,
         user_message_content=content,
         exclude_message_id=user_msg.id,
+        include_file_ids=include_file_ids,
         persist=True,
     )
 
@@ -233,6 +235,7 @@ async def stream_message(
     provider: str | None = None,
     model_id: str | None = None,
     retry_message_id: uuid.UUID | None = None,
+    include_file_ids: list[uuid.UUID] | None = None,
 ) -> AsyncIterator[tuple[str, dict]]:
     """Yield (event_name, payload) for SSE. Write-ahead + history-preserving. On
     retry the prior user message is reused instead of duplicated."""
@@ -267,6 +270,7 @@ async def stream_message(
             target_model_id=model_id,
             user_message_content=content,
             exclude_message_id=user_msg.id,
+            include_file_ids=include_file_ids,
             persist=True,
         )
     except ProviderError as err:

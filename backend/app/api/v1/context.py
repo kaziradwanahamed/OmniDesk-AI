@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,6 +49,8 @@ _DEFAULT_MODEL = conversation_service.DEFAULT_MODEL
     response_model=ContextPreviewOut,
 )
 async def context_preview(
+    q: str = Query(default="", description="Optional draft text to preview L5 matches"),
+    include_file_ids: list[uuid.UUID] = Query(default=[]),
     conversation: Conversation = Depends(require_conversation_owner),
     db: AsyncSession = Depends(get_db),
 ):
@@ -59,7 +61,8 @@ async def context_preview(
         conversation=conversation,
         target_provider=provider,
         target_model_id=model_id,
-        user_message_content="",  # dry run: no pending message yet
+        user_message_content=q,  # dry run; empty previews pinned excerpts only
+        include_file_ids=include_file_ids,
         persist=False,
     )
     return ContextPreviewOut(
@@ -71,6 +74,7 @@ async def context_preview(
         layer_tokens=built.layer_tokens,
         omitted_items=built.omitted_items,
         recent_message_count=built.recent_message_count,
+        file_excerpts=built.file_excerpts,
         system_prompt=built.system_prompt,
     )
 

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import security
 from app.db.session import get_db
+from app.models.attachment import Attachment
 from app.models.conversation import Conversation
 from app.models.project import Project
 from app.models.user import User
@@ -84,3 +85,29 @@ async def require_conversation_owner(
             status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
         )
     return conversation
+
+
+async def require_attachment_owner(
+    project_id: uuid.UUID,
+    attachment_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Attachment:
+    """Load an attachment, enforcing that it belongs to the path's project AND
+    that the project is owned by the caller. Returns 404 for missing OR unowned
+    attachments/projects (never 403) to avoid leaking existence."""
+    stmt = (
+        select(Attachment)
+        .join(Project, Attachment.project_id == Project.id)
+        .where(
+            Attachment.id == attachment_id,
+            Attachment.project_id == project_id,
+            Project.user_id == user.id,
+        )
+    )
+    attachment = (await db.execute(stmt)).scalar_one_or_none()
+    if attachment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="File not found"
+        )
+    return attachment

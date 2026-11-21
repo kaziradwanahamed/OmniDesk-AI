@@ -10,6 +10,7 @@
  */
 
 import type {
+  Attachment,
   AuthUser,
   ChatMessage,
   Conversation,
@@ -101,6 +102,10 @@ async function request<T>(
     throw new ApiError(0, "Cannot reach the server. Is the backend running?");
   }
 
+  return handleResponse<T>(res);
+}
+
+async function handleResponse<T>(res: Response): Promise<T> {
   if (res.status === 204) return undefined as T;
 
   const text = await res.text();
@@ -120,6 +125,26 @@ async function request<T>(
     );
   }
   return data as T;
+}
+
+/** Multipart upload (FormData). The browser sets the multipart Content-Type +
+ * boundary itself, so we only attach the CSRF header + cookies. */
+async function requestUpload<T>(path: string, form: FormData): Promise<T> {
+  const headers: Record<string, string> = {};
+  const csrf = readCookie("csrf_token");
+  if (csrf) headers["X-CSRF-Token"] = csrf;
+  let res: Response;
+  try {
+    res = await fetch(API_BASE + path, {
+      method: "POST",
+      headers,
+      credentials: "include",
+      body: form,
+    });
+  } catch {
+    throw new ApiError(0, "Cannot reach the server. Is the backend running?");
+  }
+  return handleResponse<T>(res);
 }
 
 // --- API DTOs (snake_case) ---
@@ -382,7 +407,32 @@ interface ApiContextPreview {
   layer_tokens: Record<string, number>;
   omitted_items: Record<string, unknown>[];
   recent_message_count: number;
+  file_excerpts: ApiFileExcerpt[];
   system_prompt: string;
+}
+interface ApiFileExcerpt {
+  filename: string;
+  chunk_index: number;
+  token_est: number;
+  pinned: boolean;
+  matched: boolean;
+  rank: number | null;
+}
+interface ApiAttachment {
+  id: string;
+  project_id: string;
+  filename: string;
+  extension: string;
+  mime_type: string;
+  size_bytes: number;
+  sha256: string;
+  extraction_status: string;
+  extraction_error: string | null;
+  chunk_count: number;
+  pinned: boolean;
+  created_at: string;
+  updated_at: string;
+  deduplicated?: boolean;
 }
 interface ApiSummary {
   id: string;
@@ -503,7 +553,34 @@ function mapContextPreview(p: ApiContextPreview): ContextPreview {
     layerTokens: p.layer_tokens,
     omittedItems: p.omitted_items,
     recentMessageCount: p.recent_message_count,
+    fileExcerpts: (p.file_excerpts ?? []).map((e) => ({
+      filename: e.filename,
+      chunkIndex: e.chunk_index,
+      tokenEst: e.token_est,
+      pinned: e.pinned,
+      matched: e.matched,
+      rank: e.rank,
+    })),
     systemPrompt: p.system_prompt,
+  };
+}
+
+function mapAttachment(a: ApiAttachment): Attachment {
+  return {
+    id: a.id,
+    projectId: a.project_id,
+    filename: a.filename,
+    extension: a.extension,
+    mimeType: a.mime_type,
+    sizeBytes: a.size_bytes,
+    sha256: a.sha256,
+    extractionStatus: a.extraction_status,
+    extractionError: a.extraction_error,
+    chunkCount: a.chunk_count,
+    pinned: a.pinned,
+    createdAt: a.created_at,
+    updatedAt: a.updated_at,
+    deduplicated: a.deduplicated ?? false,
   };
 }
 
@@ -715,11 +792,15 @@ export const api = {
   },
 
   // --- context inspector & seamless model switching ---
-  async getContextPreview(conversationId: string): Promise<ContextPreview> {
+  async getContextPreview(
+    conversationId: string,
+    query?: string,
+  ): Promise<ContextPreview> {
+    const qs = query && query.trim() ? `?q=${encodeURIComponent(query)}` : "";
     return mapContextPreview(
       await request<ApiContextPreview>(
         "GET",
-        `/conversations/${conversationId}/context-preview`,
+        `/conversations/${conversationId}/context-preview${qs}`,
       ),
     );
   },
@@ -885,5 +966,68 @@ export const api = {
   },
   async getUsage(): Promise<UsageSummaryUI> {
     return mapUsage(await request<ApiUsageSummary>("GET", "/usage"));
+  },
+
+  // --- project files (Phase 9) ---
+  async listFiles(projectId: string): Promise<Attachment[]> {
+    return (
+      await request<ApiAttachment[]>("GET", `/projects/${projectId}/files`)
+    ).map(mapAttachment);
+  },
+  async uploadFile(projectId: string, file: File): Promise<Attachment> {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    return mapAttachment(
+      await requestUpload<ApiAttachment>(`/projects/${projectId}/files`, form),
+    );
+  },
+  async updateFile(
+    projectId: string,
+    fileId: string,
+    patch: { pinned?: boolean; filename?: string },
+  ): Promise<Attachment> {
+    return mapAttachment(
+      await request<ApiAttachment>(
+        "PATCH",
+        `/projects/${projectId}/files/${fileId}`,
+        patch,
+      ),
+    );
+  },
+  async deleteFile(projectId: string, fileId: string): Promise<void> {
+    await request<void>("DELETE", `/projects/${projectId}/files/${fileId}`);
+  },
+
+  /** Download a project export (Markdown or JSON) via an authenticated fetch,
+   * then trigger a browser save. Browser-only. */
+  async downloadExport(
+    projectId: string,
+    format: "md" | "json",
+  ): Promise<void> {
+    let res: Response;
+    try {
+      res = await fetch(
+        `${API_BASE}/projects/${projectId}/export?format=${format}`,
+        { method: "GET", credentials: "include" },
+      );
+    } catch {
+      throw new ApiError(0, "Cannot reach the server. Is the backend running?");
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      throw new ApiError(res.status, extractMessage(text, res.status));
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get("content-disposition") ?? "";
+    const match = disposition.match(/filename="?([^"]+)"?/);
+    const filename = match ? match[1] : `export.${format}`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   },
 };

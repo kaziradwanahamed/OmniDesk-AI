@@ -9,7 +9,7 @@ Priority order (Blueprint Ch. 18):
   L2  Project instructions + description .. pinned, mandatory
   L3  Project status + active task ........ pinned, high priority (<=20% cap)
   L4  Active decisions + constraints ...... high priority (<=20% cap)
-  L5  Relevant file excerpts .............. retrieved (Phase 9 hook — empty now)
+  L5  Relevant file excerpts .............. retrieved: pinned + ts_rank_cd (Phase 9)
   L6  Compact older-history summary ....... rolling summary (Phase 7)
   L7  Recent turns, chronological ......... floor of 60% of remaining budget
   L8  Current user message ................ mandatory
@@ -36,7 +36,12 @@ from app.models.context_snapshot import ContextSnapshot
 from app.models.conversation import Conversation, Message
 from app.models.message_group import MessageGroup
 from app.models.project import Project
-from app.services import memory_service, project_service, summarization_service
+from app.services import (
+    file_service,
+    memory_service,
+    project_service,
+    summarization_service,
+)
 from app.services.token_estimate import (
     chars_for_tokens,
     estimate_message_tokens,
@@ -90,6 +95,8 @@ class BuiltContext:
     system_prompt: str
     recent_message_count: int
     layer_tokens: dict[str, int] = field(default_factory=dict)
+    # Layer-5 file excerpts actually injected (for the Context Inspector).
+    file_excerpts: list[dict] = field(default_factory=list)
     snapshot_id: uuid.UUID | None = None
     _snapshot: ContextSnapshot | None = field(default=None, repr=False)
 
@@ -276,6 +283,7 @@ async def build(
     user_message_content: str,
     max_output_tokens: int = 2048,
     exclude_message_id: uuid.UUID | None = None,
+    include_file_ids: list[uuid.UUID] | None = None,
     persist: bool = True,
     token_budget: int | None = None,
 ) -> BuiltContext:
@@ -305,7 +313,6 @@ async def build(
     l3_raw = "\n".join(p for p in (status_text, active_text) if p)
     l4_raw = _compose_decisions_block(decisions)
     l6_raw = _compose_summary_block(summary.content if summary else "")
-    l5 = ""  # Phase 9: retrieved file excerpts
 
     omitted: list[dict] = []
     remaining = budget
@@ -356,6 +363,43 @@ async def build(
                 {"type": "summary", "trimmed": True, "version": summary.version if summary else None}
             )
 
+    # 5. Fill the final remaining space with L5: retrieved file excerpts (pinned +
+    #    explicitly-included files first, then ts_rank_cd matches for the current
+    #    message), each formatted "[File: <name> | Chunk <N>]". Over-budget chunks
+    #    are audited as omitted. Strictly scoped to this project.
+    l5 = ""
+    file_excerpts: list[dict] = []
+    if project is not None:
+        retrieval = await file_service.retrieve_excerpts(
+            db,
+            project.id,
+            user_message_content,
+            include_file_ids or [],
+            max(remaining, 0),
+        )
+        l5 = retrieval.text
+        if l5:
+            remaining -= estimate_tokens(l5)
+        file_excerpts = [
+            {
+                "filename": e.filename,
+                "chunk_index": e.chunk_index,
+                "token_est": e.token_est,
+                "pinned": e.pinned,
+                "matched": e.matched,
+                "rank": e.rank,
+            }
+            for e in retrieval.included
+        ]
+        for e in retrieval.dropped:
+            omitted.append(
+                {
+                    "type": "file_excerpt",
+                    "file": e.filename,
+                    "chunk_index": e.chunk_index,
+                }
+            )
+
     # Compose artifacts. system_prompt = L1+L2+L3+L4+L5+L6.
     system_prompt = _compose_system_prompt([l1, l2, l3, l4, l5, l6])
     messages = _format_with_provenance(selected_recent, target_provider) + [
@@ -381,6 +425,10 @@ async def build(
         key = f"decisions:{len(decisions)}"
         included.append(key)
         layer_tokens[key] = estimate_tokens(l4)
+    if l5:
+        key = f"file_excerpts:{len(file_excerpts)}"
+        included.append(key)
+        layer_tokens[key] = estimate_tokens(l5)
     if l6 and summary is not None:
         key = f"summary:v{summary.version}"
         included.append(key)
@@ -410,6 +458,7 @@ async def build(
         system_prompt=system_prompt,
         recent_message_count=len(selected_recent),
         layer_tokens=layer_tokens,
+        file_excerpts=file_excerpts,
     )
 
     if persist:

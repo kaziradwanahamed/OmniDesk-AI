@@ -55,6 +55,20 @@ class Settings(BaseSettings):
     # deployment. When on it never blocks or fails the chat turn.
     summary_auto_enabled: bool = False
 
+    # --- Project files & lexical retrieval (Phase 9, L5) ---
+    # Backend-only directory for uploaded files. NEVER a public/static folder;
+    # files are served only through the owner-checked download endpoint. Stored
+    # under server-generated UUID keys (original names are never trusted on disk).
+    upload_dir: str = "/app/var/uploads"
+    # Hard cap on a single uploaded file (default 10 MB, blueprint Ch. 22).
+    max_upload_bytes: int = 10 * 1024 * 1024
+    # Overlapping chunking targets (conservative tokens; blueprint: ~600–800 / 80).
+    chunk_target_tokens: int = 700
+    chunk_overlap_tokens: int = 80
+    # Max lexical (ts_rank_cd) candidate chunks considered per retrieval before
+    # token-budget trimming. Pinned chunks are always considered first.
+    file_retrieval_candidate_limit: int = 24
+
     # --- Provider key encryption ---
     # Fernet key (generate: python -c "from cryptography.fernet import Fernet;
     # print(Fernet.generate_key().decode())"). Encrypts stored provider API keys.

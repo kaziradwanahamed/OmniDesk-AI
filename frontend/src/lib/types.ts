@@ -143,7 +143,39 @@ export interface ContextPreview {
   layerTokens: Record<string, number>;
   omittedItems: Array<Record<string, unknown>>;
   recentMessageCount: number;
+  /** Layer-5 file excerpts injected into the next turn (pinned + query-matched). */
+  fileExcerpts: FileExcerpt[];
   systemPrompt: string;
+}
+
+/** A project file (attachment) and its extraction/retrieval metadata. */
+export interface Attachment {
+  id: string;
+  projectId: string;
+  filename: string;
+  extension: string;
+  mimeType: string;
+  sizeBytes: number;
+  sha256: string;
+  /** pending | extracted | empty | encrypted | failed */
+  extractionStatus: string;
+  extractionError?: string | null;
+  chunkCount: number;
+  pinned: boolean;
+  createdAt: string;
+  updatedAt: string;
+  /** True when an identical file already existed and was returned on upload. */
+  deduplicated?: boolean;
+}
+
+/** One Layer-5 excerpt surfaced in the Context Inspector (no file body). */
+export interface FileExcerpt {
+  filename: string;
+  chunkIndex: number;
+  tokenEst: number;
+  pinned: boolean;
+  matched: boolean;
+  rank: number | null;
 }
 
 /** The active rolling conversation summary (L6), from the summary endpoints. */

@@ -87,6 +87,7 @@ async def send_message(
             data.provider,
             data.model_id,
             data.retry_message_id,
+            data.include_file_ids,
         )
     except ProviderError as err:
         return JSONResponse(
@@ -122,6 +123,7 @@ async def stream_message(
             data.provider,
             data.model_id,
             data.retry_message_id,
+            data.include_file_ids,
         ):
             yield f"event: {event}\ndata: {json.dumps(payload)}\n\n"
 

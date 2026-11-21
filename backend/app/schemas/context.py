@@ -7,6 +7,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
+from app.schemas.attachment import FileExcerptOut
 from app.schemas.conversation import ConversationOut, MessageOut
 
 
@@ -38,6 +39,8 @@ class ContextPreviewOut(BaseModel):
     layer_tokens: dict[str, int]
     omitted_items: list[dict]
     recent_message_count: int
+    # Layer-5 file excerpts injected into the next turn (pinned + query-matched).
+    file_excerpts: list[FileExcerptOut] = []
     system_prompt: str
 
 

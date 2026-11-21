@@ -58,6 +58,9 @@ class MessageSendIn(BaseModel):
     # When retrying a turn that failed after the user message was saved
     # (write-ahead), reuse that row instead of duplicating it.
     retry_message_id: uuid.UUID | None = None
+    # Project files to explicitly pin into Layer 5 for this turn (in addition to
+    # any files flagged pinned at the project level).
+    include_file_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class MessageSendOut(BaseModel):

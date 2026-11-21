@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, require_csrf, require_project_owner
@@ -17,7 +18,7 @@ from app.schemas.project import (
     ProjectOut,
     ProjectUpdate,
 )
-from app.services import conversation_service, project_service
+from app.services import conversation_service, export_service, project_service
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -93,6 +94,26 @@ async def put_instructions(
     db: AsyncSession = Depends(get_db),
 ):
     return await project_service.update_instructions(db, project.id, data)
+
+
+@router.get("/{project_id}/export")
+async def export_project(
+    format: str = Query(default="md", pattern="^(md|json)$"),
+    project: Project = Depends(require_project_owner),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Export the project's persistent memory + conversations as Markdown or JSON
+    (owner-enforced; downloaded as an attachment)."""
+    if format not in ("md", "json"):
+        raise HTTPException(status_code=400, detail="format must be 'md' or 'json'")
+    content, media_type, filename = await export_service.export_project(
+        db, project, format
+    )
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{project_id}/conversations", response_model=list[ConversationOut])

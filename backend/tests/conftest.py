@@ -87,3 +87,14 @@ async def make_client(
 @pytest.fixture
 async def client(make_client) -> AsyncClient:
     return await make_client()
+
+
+@pytest.fixture
+def upload_root(tmp_path, monkeypatch):
+    """Redirect the file-service upload root to an isolated temp dir so file
+    tests never touch the real (container) upload directory."""
+    from app.services import file_service
+
+    root = tmp_path / "uploads"
+    monkeypatch.setattr(file_service, "_upload_root", lambda: root)
+    return root
