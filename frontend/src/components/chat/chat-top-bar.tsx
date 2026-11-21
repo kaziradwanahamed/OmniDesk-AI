@@ -1,7 +1,7 @@
 "use client";
 
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
-import { ProviderBadge } from "@/components/shared/provider-badge";
+import { ModelTag } from "@/components/shared/provider-badge";
 import { Button } from "@/components/ui/button";
 import { SidebarToggle } from "@/components/layout/sidebar-toggle";
 import type { Conversation, Project } from "@/lib/types";
@@ -30,9 +30,9 @@ export function ChatTopBar({
         </div>
       </div>
       {conversation.activeProvider ? (
-        <ProviderBadge
+        <ModelTag
           provider={conversation.activeProvider}
-          modelId={conversation.activeModelId ?? undefined}
+          modelId={conversation.activeModelId}
           className="hidden sm:inline-flex"
         />
       ) : null}

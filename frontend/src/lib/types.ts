@@ -26,7 +26,8 @@ export interface ChatMessage {
   id: string;
   role: MessageRole;
   content: string;
-  provider?: Provider | null;
+  /** Provider label — a known Provider, the "stub" adapter, etc. */
+  provider?: string | null;
   modelId?: string | null;
   status?: MessageStatus;
   usage?: NormalizedUsage | null;
@@ -44,7 +45,7 @@ export interface Conversation {
   id: string;
   projectId: string;
   title: string;
-  activeProvider: Provider | null;
+  activeProvider: string | null;
   activeModelId: string | null;
   updatedAt: string;
   messageCount?: number;

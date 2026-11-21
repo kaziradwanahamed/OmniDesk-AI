@@ -1,30 +1,20 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Info, X } from "lucide-react";
+import { AlertTriangle, Loader2, X } from "lucide-react";
 import { ChatTopBar } from "./chat-top-bar";
 import { MessageTimeline } from "./message-timeline";
-import { Composer } from "./composer";
-import { ErrorRecoveryBanner } from "./error-recovery-banner";
-import { MultiModelGrid, type MultiModelColumn } from "./multi-model-grid";
-import { ContextInspector } from "@/components/context/context-inspector";
+import { ChatComposer } from "./chat-composer";
+import { LiveContextPanel } from "./live-context-panel";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
-import {
-  PREVIEW_MODELS,
-  PREVIEW_NOTICE,
-  sampleDecisions,
-  sampleInstructions,
-  sampleMessages,
-  sampleSnapshot,
-  sampleSummary,
-  sampleTasks,
-} from "@/lib/sample";
+import { useConversations } from "@/components/conversations/conversations-provider";
+import { useProjects } from "@/components/projects/projects-provider";
+import { api, ApiError } from "@/lib/api-client";
 import type {
   ChatMessage,
   Conversation,
   Project,
-  ProviderError,
-  ProviderModel,
+  ProjectInstructions,
 } from "@/lib/types";
 
 function useMediaQuery(query: string): boolean {
@@ -39,162 +29,207 @@ function useMediaQuery(query: string): boolean {
   return matches;
 }
 
-const PREVIEW_COLUMNS: MultiModelColumn[] = [
-  {
-    provider: "openai",
-    modelId: "preview-model",
-    status: "completed",
-    content:
-      "Use a **token bucket** keyed per principal in Redis with a small burst allowance.",
-  },
-  {
-    provider: "anthropic",
-    modelId: "preview-model",
-    status: "completed",
-    content:
-      "Prefer a token bucket, then layer a sliding-window counter for the hard per-minute cap.",
-  },
-  {
-    provider: "gemini",
-    modelId: "preview-model",
-    status: "failed",
-    errorLabel: "Rate limited (429)",
-  },
-];
-
 export function ChatWorkspace({
-  project,
-  conversation,
+  projectId,
+  conversationId,
 }: {
-  project: Project;
-  conversation: Conversation;
+  projectId: string;
+  conversationId: string;
 }) {
   const isDesktop = useMediaQuery("(min-width: 1280px)");
+  const { conversations, updateConversationLocal } = useConversations();
+  const { projects } = useProjects();
+
   const [desktopInspector, setDesktopInspector] = useState(true);
   const [mobileInspector, setMobileInspector] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>(sampleMessages);
-  const [multiModel, setMultiModel] = useState(false);
-  const [error, setError] = useState<ProviderError | null>(null);
-  const [showPreview, setShowPreview] = useState(true);
-  const [selection, setSelection] = useState<ProviderModel>({
-    provider: conversation.activeProvider ?? "anthropic",
-    modelId: conversation.activeModelId ?? "preview-model",
-  });
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [sendError, setSendError] = useState<{
+    category?: string;
+    message: string;
+  } | null>(null);
+  const [instructions, setInstructions] = useState<ProjectInstructions | null>(
+    null,
+  );
 
+  const conversation = conversations.find((c) => c.id === conversationId) ?? null;
+  const project = projects.find((p) => p.id === projectId) ?? null;
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      setLoading(true);
+      setLoadError(null);
+      setSendError(null);
+      try {
+        const [msgs, instr] = await Promise.all([
+          api.getMessages(conversationId),
+          api.getInstructions(projectId),
+        ]);
+        if (!active) return;
+        setMessages(msgs);
+        setInstructions(instr);
+      } catch (e) {
+        if (active)
+          setLoadError(
+            e instanceof ApiError && e.status === 404
+              ? "Conversation not found."
+              : "Could not load this conversation.",
+          );
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [conversationId, projectId]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, multiModel]);
+  }, [messages]);
 
-  const activeTask = sampleTasks.find((t) => t.isActive) ?? null;
   const inspectorOpen = isDesktop ? desktopInspector : mobileInspector;
-
   function toggleInspector() {
     if (isDesktop) setDesktopInspector((v) => !v);
     else setMobileInspector((v) => !v);
   }
 
-  function handleSend(text: string) {
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: crypto.randomUUID(),
-        role: "user",
-        content: text,
-        createdAt: new Date().toISOString(),
-      },
-    ]);
-    // No provider backend is wired yet — surface this honestly via the error
-    // recovery flow rather than fabricating a response.
-    setError({
-      category: "MODEL_UNAVAILABLE",
-      message:
-        "Preview mode — no provider backend is connected yet. A real response streams once a provider is wired (Phase 4).",
-    });
+  async function handleSend(text: string) {
+    try {
+      const { userMessage, assistantMessage } = await api.sendMessage(
+        conversationId,
+        text,
+      );
+      setMessages((prev) => [...prev, userMessage, assistantMessage]);
+      setSendError(null);
+      if (conversation) {
+        updateConversationLocal({
+          ...conversation,
+          activeProvider: assistantMessage.provider ?? null,
+          activeModelId: assistantMessage.modelId ?? null,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 502) {
+        // Provider failed, but the user message was persisted (write-ahead).
+        try {
+          setMessages(await api.getMessages(conversationId));
+        } catch {
+          /* ignore refetch failure */
+        }
+        setSendError({ category: err.category, message: err.message });
+        return; // message was sent; let the composer clear
+      }
+      // Network/other failure — message not saved; preserve the draft.
+      setSendError({
+        category: err instanceof ApiError ? err.category : undefined,
+        message:
+          err instanceof ApiError ? err.message : "Could not send message.",
+      });
+      throw err;
+    }
   }
 
-  const inspector = (
-    <ContextInspector
-      instructions={sampleInstructions}
-      activeTask={activeTask}
-      decisions={sampleDecisions}
-      summary={sampleSummary}
-      snapshot={sampleSnapshot}
-    />
-  );
+  const topProject: Project = project ?? {
+    id: projectId,
+    name: "Project",
+    description: "",
+    status: "active",
+    updatedAt: new Date().toISOString(),
+  };
+  const topConversation: Conversation = conversation ?? {
+    id: conversationId,
+    projectId,
+    title: "Conversation",
+    activeProvider: null,
+    activeModelId: null,
+    updatedAt: new Date().toISOString(),
+  };
+
+  const panel = <LiveContextPanel project={project} instructions={instructions} />;
 
   return (
     <div className="flex min-h-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">
         <ChatTopBar
-          project={project}
-          conversation={conversation}
+          project={topProject}
+          conversation={topConversation}
           inspectorOpen={inspectorOpen}
           onToggleInspector={toggleInspector}
         />
 
-        {showPreview ? (
-          <div className="flex items-center gap-2 border-b border-subtle bg-accent/5 px-4 py-2 text-xs text-secondary">
-            <Info className="h-3.5 w-3.5 shrink-0 text-accent" />
-            <span className="min-w-0 flex-1">{PREVIEW_NOTICE}</span>
-            <button
-              type="button"
-              aria-label="Dismiss preview notice"
-              onClick={() => setShowPreview(false)}
-              className="rounded p-0.5 text-tertiary hover:text-primary"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        ) : null}
-
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {multiModel ? (
-            <MultiModelGrid columns={PREVIEW_COLUMNS} />
+          {loading ? (
+            <div className="flex h-full items-center justify-center">
+              <Loader2 className="h-6 w-6 animate-spin text-tertiary" />
+            </div>
+          ) : loadError ? (
+            <div className="flex h-full items-center justify-center px-4 text-center text-sm text-tertiary">
+              {loadError}
+            </div>
+          ) : messages.length === 0 ? (
+            <div className="mx-auto flex h-full max-w-3xl items-center justify-center px-4 text-center">
+              <div>
+                <p className="text-sm font-medium text-primary">
+                  Start the conversation
+                </p>
+                <p className="mt-1 text-sm text-secondary">
+                  Send a message below. Replies come from the stub echo adapter
+                  until Phase 4 adds real providers.
+                </p>
+              </div>
+            </div>
           ) : (
             <MessageTimeline messages={messages} />
           )}
           <div ref={bottomRef} />
         </div>
 
-        {error ? (
-          <div className="px-4">
-            <ErrorRecoveryBanner
-              error={error}
-              available={PREVIEW_MODELS}
-              selection={selection}
-              onSelect={setSelection}
-              onRetry={() => setError(null)}
-              onDismiss={() => setError(null)}
-            />
+        {sendError ? (
+          <div className="mx-auto w-full max-w-3xl px-4">
+            <div className="my-2 flex items-start gap-2 rounded-lg border border-danger/40 bg-danger/10 p-3 text-sm">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-danger" />
+              <div className="min-w-0 flex-1">
+                <p className="font-medium text-primary">
+                  {sendError.category
+                    ? sendError.category.replaceAll("_", " ")
+                    : "Send failed"}
+                </p>
+                <p className="text-secondary">{sendError.message}</p>
+                <p className="mt-0.5 text-xs text-tertiary">
+                  Your message and history are preserved. Manual model switching
+                  across real providers arrives in Phase 4.
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="Dismiss"
+                onClick={() => setSendError(null)}
+                className="rounded p-1 text-tertiary transition-colors hover:text-primary"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         ) : null}
 
-        <Composer
-          selection={selection}
-          available={PREVIEW_MODELS}
-          onSelect={setSelection}
-          multiModel={multiModel}
-          onToggleMultiModel={setMultiModel}
-          streaming={false}
-          onSend={handleSend}
-          onStop={() => {}}
-          budgetUsed={sampleSnapshot.estimatedInputTokens}
-          budgetTotal={sampleSnapshot.tokenBudget}
-          onOpenInspector={toggleInspector}
-        />
+        <ChatComposer onSend={handleSend} />
       </div>
 
       {desktopInspector ? (
         <aside className="hidden w-[340px] shrink-0 flex-col border-l border-subtle bg-surface xl:flex">
-          {inspector}
+          {panel}
         </aside>
       ) : null}
 
       <Sheet open={mobileInspector} onOpenChange={setMobileInspector}>
         <SheetContent side="right" className="w-[360px]">
           <SheetTitle className="sr-only">Context Included</SheetTitle>
-          {inspector}
+          {panel}
         </SheetContent>
       </Sheet>
     </div>

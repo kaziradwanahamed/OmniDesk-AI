@@ -30,6 +30,7 @@ import { ThemeToggle } from "@/components/shared/theme-toggle";
 import { useAuth } from "@/components/auth/auth-provider";
 import { useProjects } from "@/components/projects/projects-provider";
 import { useSidebar } from "./sidebar-context";
+import { ConversationList } from "./conversation-list";
 import { cn } from "@/lib/cn";
 
 function NavLink({
@@ -81,7 +82,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         {
           label: "Chat",
           icon: MessageSquare,
-          href: `/projects/${currentProjectId}/chat/preview`,
+          href: `/projects/${currentProjectId}/chat`,
           base: `/projects/${currentProjectId}/chat`,
         },
         {
@@ -227,14 +228,18 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         </nav>
       </div>
 
-      {/* Conversations (chat wiring arrives in Phase 3) */}
-      <div className="mt-4 flex min-h-0 flex-1 flex-col px-2">
-        <p className="mb-1 px-2.5 text-xs font-semibold tracking-wide text-tertiary uppercase">
-          Conversations
-        </p>
-        <p className="px-2.5 text-xs text-tertiary">
-          Conversations appear here once chat is connected.
-        </p>
+      {/* Conversations */}
+      <div className="mt-4 flex min-h-0 flex-1 flex-col">
+        {currentProjectId ? (
+          <ConversationList
+            projectId={currentProjectId}
+            onNavigate={onNavigate}
+          />
+        ) : (
+          <p className="px-4 text-xs text-tertiary">
+            Select a project to see its conversations.
+          </p>
+        )}
       </div>
 
       {/* Footer: account + theme */}

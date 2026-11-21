@@ -24,3 +24,21 @@ async def register_user(
 def csrf_headers(client: AsyncClient) -> dict[str, str]:
     token = client.cookies.get("csrf_token")
     return {"X-CSRF-Token": token} if token else {}
+
+
+async def create_project(client: AsyncClient, name: str = "Test Project") -> str:
+    resp = await client.post(
+        "/api/v1/projects", headers=csrf_headers(client), json={"name": name}
+    )
+    return resp.json()["id"]
+
+
+async def create_conversation(
+    client: AsyncClient, project_id: str, title: str = "New conversation"
+) -> str:
+    resp = await client.post(
+        f"/api/v1/projects/{project_id}/conversations",
+        headers=csrf_headers(client),
+        json={"title": title},
+    )
+    return resp.json()["id"]

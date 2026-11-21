@@ -1,10 +1,9 @@
 /**
  * Typed client for the OmniDesk FastAPI backend.
  *
- * - Sends cookies with every request (`credentials: "include"`) so the HttpOnly
- *   session cookie flows automatically.
- * - Echoes the double-submit CSRF token (read from the `csrf_token` cookie) as
- *   `X-CSRF-Token` on state-changing requests.
+ * - Sends cookies with every request (`credentials: "include"`).
+ * - Echoes the double-submit CSRF token (`csrf_token` cookie) as `X-CSRF-Token`
+ *   on state-changing requests.
  * - Maps snake_case API DTOs to the camelCase UI types.
  *
  * The API base URL is a non-secret public value (NEXT_PUBLIC_API_BASE_URL).
@@ -12,6 +11,10 @@
 
 import type {
   AuthUser,
+  ChatMessage,
+  Conversation,
+  MessageRole,
+  MessageStatus,
   Project,
   ProjectInstructions,
   ProjectStatus,
@@ -22,10 +25,12 @@ const API_BASE =
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  category?: string;
+  constructor(status: number, message: string, category?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.category = category;
   }
 }
 
@@ -40,15 +45,24 @@ function readCookie(name: string): string | null {
 const UNSAFE = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 function extractMessage(data: unknown, status: number): string {
-  if (data && typeof data === "object" && "detail" in data) {
-    const detail = (data as { detail: unknown }).detail;
-    if (typeof detail === "string") return detail;
-    if (Array.isArray(detail) && detail.length) {
-      const first = detail[0] as { msg?: string };
+  if (data && typeof data === "object") {
+    const d = data as { detail?: unknown; message?: unknown };
+    if (typeof d.detail === "string") return d.detail;
+    if (Array.isArray(d.detail) && d.detail.length) {
+      const first = d.detail[0] as { msg?: string };
       if (first?.msg) return first.msg;
     }
+    if (typeof d.message === "string") return d.message;
   }
   return `Request failed (${status})`;
+}
+
+function extractCategory(data: unknown): string | undefined {
+  if (data && typeof data === "object" && "category" in data) {
+    const c = (data as { category: unknown }).category;
+    if (typeof c === "string") return c;
+  }
+  return undefined;
 }
 
 async function request<T>(
@@ -86,7 +100,13 @@ async function request<T>(
       data = text;
     }
   }
-  if (!res.ok) throw new ApiError(res.status, extractMessage(data, res.status));
+  if (!res.ok) {
+    throw new ApiError(
+      res.status,
+      extractMessage(data, res.status),
+      extractCategory(data),
+    );
+  }
   return data as T;
 }
 
@@ -115,6 +135,32 @@ interface ApiInstructions {
   version: number;
   is_active: boolean;
   updated_at: string;
+}
+interface ApiConversation {
+  id: string;
+  project_id: string;
+  title: string;
+  active_provider: string | null;
+  active_model_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+interface ApiMessage {
+  id: string;
+  conversation_id: string;
+  sequence_no: number;
+  role: string;
+  content: string;
+  provider: string | null;
+  model_id: string | null;
+  status: string;
+  error_code: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  latency_ms: number | null;
+  provider_request_id: string | null;
+  created_at: string;
 }
 
 function mapUser(u: ApiUser): AuthUser {
@@ -147,6 +193,35 @@ function mapInstructions(i: ApiInstructions | null): ProjectInstructions | null 
     responseStyle: i.response_style ?? undefined,
     version: i.version,
     updatedAt: i.updated_at,
+  };
+}
+
+function mapConversation(c: ApiConversation): Conversation {
+  return {
+    id: c.id,
+    projectId: c.project_id,
+    title: c.title,
+    activeProvider: c.active_provider,
+    activeModelId: c.active_model_id,
+    updatedAt: c.updated_at,
+  };
+}
+
+function mapMessage(m: ApiMessage): ChatMessage {
+  return {
+    id: m.id,
+    role: m.role as MessageRole,
+    content: m.content,
+    provider: m.provider,
+    modelId: m.model_id,
+    status: m.status as MessageStatus,
+    usage: {
+      inputTokens: m.input_tokens,
+      outputTokens: m.output_tokens,
+      totalTokens: m.total_tokens,
+    },
+    latencyMs: m.latency_ms,
+    createdAt: m.created_at,
   };
 }
 
@@ -238,5 +313,61 @@ export const api = {
       }),
     );
     return result as ProjectInstructions;
+  },
+
+  // --- conversations & messages ---
+  async listConversations(projectId: string): Promise<Conversation[]> {
+    return (
+      await request<ApiConversation[]>(
+        "GET",
+        `/projects/${projectId}/conversations`,
+      )
+    ).map(mapConversation);
+  },
+  async createConversation(projectId: string, title: string): Promise<Conversation> {
+    return mapConversation(
+      await request<ApiConversation>(
+        "POST",
+        `/projects/${projectId}/conversations`,
+        { title },
+      ),
+    );
+  },
+  async getConversation(id: string): Promise<Conversation> {
+    return mapConversation(
+      await request<ApiConversation>("GET", `/conversations/${id}`),
+    );
+  },
+  async renameConversation(id: string, title: string): Promise<Conversation> {
+    return mapConversation(
+      await request<ApiConversation>("PATCH", `/conversations/${id}`, { title }),
+    );
+  },
+  async deleteConversation(id: string): Promise<void> {
+    await request<void>("DELETE", `/conversations/${id}`);
+  },
+  async getMessages(id: string): Promise<ChatMessage[]> {
+    return (
+      await request<ApiMessage[]>("GET", `/conversations/${id}/messages`)
+    ).map(mapMessage);
+  },
+  async sendMessage(
+    id: string,
+    content: string,
+    provider?: string,
+    modelId?: string,
+  ): Promise<{ userMessage: ChatMessage; assistantMessage: ChatMessage }> {
+    const res = await request<{
+      user_message: ApiMessage;
+      assistant_message: ApiMessage;
+    }>("POST", `/conversations/${id}/messages`, {
+      content,
+      provider: provider ?? null,
+      model_id: modelId ?? null,
+    });
+    return {
+      userMessage: mapMessage(res.user_message),
+      assistantMessage: mapMessage(res.assistant_message),
+    };
   },
 };

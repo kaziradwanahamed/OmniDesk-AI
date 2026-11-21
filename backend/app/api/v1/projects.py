@@ -9,6 +9,7 @@ from app.api.deps import get_current_user, require_csrf, require_project_owner
 from app.db.session import get_db
 from app.models.project import Project
 from app.models.user import User
+from app.schemas.conversation import ConversationCreate, ConversationOut
 from app.schemas.project import (
     InstructionsOut,
     InstructionsUpdate,
@@ -16,7 +17,7 @@ from app.schemas.project import (
     ProjectOut,
     ProjectUpdate,
 )
-from app.services import project_service
+from app.services import conversation_service, project_service
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -92,3 +93,25 @@ async def put_instructions(
     db: AsyncSession = Depends(get_db),
 ):
     return await project_service.update_instructions(db, project.id, data)
+
+
+@router.get("/{project_id}/conversations", response_model=list[ConversationOut])
+async def list_conversations(
+    project: Project = Depends(require_project_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    return await conversation_service.list_conversations(db, project.id)
+
+
+@router.post(
+    "/{project_id}/conversations",
+    response_model=ConversationOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
+)
+async def create_conversation(
+    data: ConversationCreate,
+    project: Project = Depends(require_project_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    return await conversation_service.create_conversation(db, project.id, data.title)

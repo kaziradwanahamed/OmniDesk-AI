@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Layers, Loader2 } from "lucide-react";
@@ -17,6 +17,22 @@ export default function RegisterPage() {
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        await api.me();
+        if (active) router.replace("/projects");
+      } catch {
+        if (active) setChecking(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [router]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -41,6 +57,10 @@ export default function RegisterPage() {
       setError(err instanceof ApiError ? err.message : "Registration failed.");
       setSubmitting(false);
     }
+  }
+
+  if (checking) {
+    return <Loader2 className="h-6 w-6 animate-spin text-tertiary" />;
   }
 
   return (

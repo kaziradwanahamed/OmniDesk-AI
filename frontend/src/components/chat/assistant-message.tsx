@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { Markdown } from "./markdown";
-import { ProviderBadge } from "@/components/shared/provider-badge";
+import { ModelTag } from "@/components/shared/provider-badge";
 import { TimeAgo } from "@/components/shared/time-ago";
 import { formatTokens } from "@/lib/format";
 import type { ChatMessage } from "@/lib/types";
@@ -25,10 +25,7 @@ export function AssistantMessage({ message }: { message: ChatMessage }) {
     <div className="group/msg w-full py-5">
       <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1">
         {message.provider ? (
-          <ProviderBadge
-            provider={message.provider}
-            modelId={message.modelId ?? undefined}
-          />
+          <ModelTag provider={message.provider} modelId={message.modelId} />
         ) : null}
         <TimeAgo
           iso={message.createdAt}

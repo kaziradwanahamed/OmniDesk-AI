@@ -46,3 +46,44 @@ export function ProviderBadge({
     </span>
   );
 }
+
+/**
+ * Renders a known provider with its color, or any other label (e.g. the "stub"
+ * adapter) with a neutral dot — so non-provider sources are shown honestly.
+ */
+export function ModelTag({
+  provider,
+  modelId,
+  className,
+}: {
+  provider: string | null | undefined;
+  modelId?: string | null;
+  className?: string;
+}) {
+  if (provider && provider in PROVIDERS) {
+    return (
+      <ProviderBadge
+        provider={provider as Provider}
+        modelId={modelId ?? undefined}
+        className={className}
+      />
+    );
+  }
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-md border border-subtle bg-surface px-2 py-0.5 text-xs font-medium",
+        className,
+      )}
+    >
+      <span
+        className="inline-block h-2 w-2 shrink-0 rounded-full bg-tertiary"
+        aria-hidden
+      />
+      <span className="text-primary capitalize">{provider ?? "assistant"}</span>
+      {modelId ? (
+        <span className="font-mono text-[11px] text-tertiary">{modelId}</span>
+      ) : null}
+    </span>
+  );
+}

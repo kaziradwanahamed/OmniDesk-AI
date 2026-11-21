@@ -7,10 +7,12 @@ import uuid
 
 import jwt
 from fastapi import Depends, HTTPException, Request, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import security
 from app.db.session import get_db
+from app.models.conversation import Conversation
 from app.models.project import Project
 from app.models.user import User
 
@@ -62,3 +64,23 @@ async def require_project_owner(
             status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
         )
     return project
+
+
+async def require_conversation_owner(
+    conversation_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Conversation:
+    """Load a conversation and enforce ownership via its parent project. Returns
+    404 for missing OR unowned conversations."""
+    stmt = (
+        select(Conversation)
+        .join(Project, Conversation.project_id == Project.id)
+        .where(Conversation.id == conversation_id, Project.user_id == user.id)
+    )
+    conversation = (await db.execute(stmt)).scalar_one_or_none()
+    if conversation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+        )
+    return conversation
