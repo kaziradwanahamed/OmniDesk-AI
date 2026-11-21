@@ -16,6 +16,11 @@ import type {
   ContextPreview,
   MessageRole,
   MessageStatus,
+  DerivedResult,
+  MessageGroupInfo,
+  MultiResponse,
+  MultiSendResult,
+  MultiTarget,
   Project,
   ProjectDecision,
   ProjectInstructions,
@@ -168,6 +173,7 @@ interface ApiMessage {
   latency_ms: number | null;
   provider_request_id: string | null;
   context_snapshot_id: string | null;
+  group_id: string | null;
   metadata_json: Record<string, unknown> | null;
   created_at: string;
 }
@@ -248,6 +254,8 @@ function mapMessage(m: ApiMessage): ChatMessage {
     },
     latencyMs: m.latency_ms,
     contextSnapshotId: m.context_snapshot_id,
+    groupId: m.group_id,
+    metadata: m.metadata_json,
     event: m.role === "system_event" ? mapSwitchEvent(m.metadata_json) : null,
     createdAt: m.created_at,
   };
@@ -421,6 +429,49 @@ function mapSummaryStatus(s: ApiSummaryStatus): SummaryStatus {
     unsummarizedCount: s.unsummarized_count,
     triggerThreshold: s.trigger_threshold,
     needsSummary: s.needs_summary,
+  };
+}
+
+interface ApiGroup {
+  id: string;
+  conversation_id: string;
+  user_message_id: string | null;
+  selected_message_id: string | null;
+  kind: string;
+  created_at: string;
+}
+interface ApiMultiResponse {
+  provider: string;
+  model_id: string;
+  message: ApiMessage | null;
+  error: { category: string; message: string } | null;
+}
+interface ApiMultiSend {
+  group: ApiGroup;
+  user_message: ApiMessage;
+  responses: ApiMultiResponse[];
+}
+interface ApiDerived {
+  message: ApiMessage;
+  group: ApiGroup | null;
+}
+
+function mapGroup(g: ApiGroup): MessageGroupInfo {
+  return {
+    id: g.id,
+    conversationId: g.conversation_id,
+    userMessageId: g.user_message_id,
+    selectedMessageId: g.selected_message_id,
+    kind: g.kind,
+    createdAt: g.created_at,
+  };
+}
+function mapMultiResponse(r: ApiMultiResponse): MultiResponse {
+  return {
+    provider: r.provider,
+    modelId: r.model_id,
+    message: r.message ? mapMessage(r.message) : null,
+    error: r.error,
   };
 }
 
@@ -702,6 +753,83 @@ export const api = {
   },
   async clearSummary(conversationId: string): Promise<void> {
     await request<void>("DELETE", `/conversations/${conversationId}/summary`);
+  },
+
+  // --- multi-model (parallel / compare / synthesize) ---
+  async multiSend(
+    conversationId: string,
+    content: string,
+    targets: MultiTarget[],
+    retryMessageId?: string,
+  ): Promise<MultiSendResult> {
+    const res = await request<ApiMultiSend>(
+      "POST",
+      `/conversations/${conversationId}/messages/multi`,
+      {
+        content,
+        targets: targets.map((t) => ({ provider: t.provider, model_id: t.modelId })),
+        retry_message_id: retryMessageId ?? null,
+      },
+    );
+    return {
+      group: mapGroup(res.group),
+      userMessage: mapMessage(res.user_message),
+      responses: res.responses.map(mapMultiResponse),
+    };
+  },
+  async listGroups(conversationId: string): Promise<MessageGroupInfo[]> {
+    return (
+      await request<ApiGroup[]>(
+        "GET",
+        `/conversations/${conversationId}/message-groups`,
+      )
+    ).map(mapGroup);
+  },
+  async selectGroupMessage(
+    groupId: string,
+    messageId: string,
+  ): Promise<MessageGroupInfo> {
+    return mapGroup(
+      await request<ApiGroup>("PATCH", `/message-groups/${groupId}/select`, {
+        message_id: messageId,
+      }),
+    );
+  },
+  async compare(
+    conversationId: string,
+    subjectMessageId: string,
+    targetProvider: string,
+    targetModelId: string,
+    critiqueFocus?: string,
+  ): Promise<DerivedResult> {
+    const res = await request<ApiDerived>(
+      "POST",
+      `/conversations/${conversationId}/compare`,
+      {
+        target_provider: targetProvider,
+        target_model_id: targetModelId,
+        subject_message_id: subjectMessageId,
+        critique_focus: critiqueFocus ?? null,
+      },
+    );
+    return { message: mapMessage(res.message), group: res.group ? mapGroup(res.group) : null };
+  },
+  async synthesize(
+    conversationId: string,
+    sourceMessageIds: string[],
+    targetProvider: string,
+    targetModelId: string,
+  ): Promise<DerivedResult> {
+    const res = await request<ApiDerived>(
+      "POST",
+      `/conversations/${conversationId}/synthesize`,
+      {
+        target_provider: targetProvider,
+        target_model_id: targetModelId,
+        source_message_ids: sourceMessageIds,
+      },
+    );
+    return { message: mapMessage(res.message), group: res.group ? mapGroup(res.group) : null };
   },
   async switchModel(
     conversationId: string,

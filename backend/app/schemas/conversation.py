@@ -46,6 +46,7 @@ class MessageOut(BaseModel):
     latency_ms: int | None = None
     provider_request_id: str | None = None
     context_snapshot_id: uuid.UUID | None = None
+    group_id: uuid.UUID | None = None
     metadata_json: dict = {}
     created_at: datetime
 

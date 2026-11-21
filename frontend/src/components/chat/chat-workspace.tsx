@@ -9,6 +9,7 @@ import {
   type ModelOption,
   type ModelSelection,
 } from "./chat-composer";
+import type { MultiModelError } from "./multi-model-grid";
 import { LiveContextPanel } from "./live-context-panel";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -19,6 +20,7 @@ import { api, ApiError } from "@/lib/api-client";
 import type {
   ChatMessage,
   Conversation,
+  MessageGroupInfo,
   Project,
   ProjectInstructions,
 } from "@/lib/types";
@@ -69,6 +71,14 @@ export function ChatWorkspace({
     null,
   );
   const [retrying, setRetrying] = useState(false);
+  const [groups, setGroups] = useState<Record<string, MessageGroupInfo>>({});
+  const [groupErrors, setGroupErrors] = useState<
+    Record<string, MultiModelError[]>
+  >({});
+  const [busyGroupId, setBusyGroupId] = useState<string | null>(null);
+  const [multiMode, setMultiMode] = useState(false);
+  const [multiTargets, setMultiTargets] = useState<ModelSelection[]>([]);
+  const [ctxVersion, setCtxVersion] = useState(0);
 
   const conversation = conversations.find((c) => c.id === conversationId) ?? null;
   const project = projects.find((p) => p.id === projectId) ?? null;
@@ -81,13 +91,15 @@ export function ChatWorkspace({
       setLoadError(null);
       setSendError(null);
       try {
-        const [msgs, instr] = await Promise.all([
+        const [msgs, instr, grps] = await Promise.all([
           api.getMessages(conversationId),
           api.getInstructions(projectId),
+          api.listGroups(conversationId),
         ]);
         if (!active) return;
         setMessages(msgs);
         setInstructions(instr);
+        setGroups(Object.fromEntries(grps.map((g) => [g.id, g])));
       } catch (e) {
         if (active)
           setLoadError(
@@ -163,12 +175,12 @@ export function ChatWorkspace({
     });
   }
 
-  function syncActiveFromSelection() {
+  function syncActive(provider: string | null, modelId: string | null) {
     if (conversation) {
       updateConversationLocal({
         ...conversation,
-        activeProvider: selection.provider,
-        activeModelId: selection.modelId,
+        activeProvider: provider,
+        activeModelId: modelId,
         updatedAt: new Date().toISOString(),
       });
     }
@@ -179,6 +191,18 @@ export function ChatWorkspace({
     setRetry(
       lastUser ? { messageId: lastUser.id, content: lastUser.content } : null,
     );
+  }
+
+  /** Refetch the canonical timeline + groups and bump the context inspector. */
+  async function reload(): Promise<ChatMessage[]> {
+    const [msgs, grps] = await Promise.all([
+      api.getMessages(conversationId),
+      api.listGroups(conversationId),
+    ]);
+    setMessages(msgs);
+    setGroups(Object.fromEntries(grps.map((g) => [g.id, g])));
+    setCtxVersion((v) => v + 1);
+    return msgs;
   }
 
   async function handleSend(text: string) {
@@ -196,17 +220,15 @@ export function ChatWorkspace({
     // 2. Send through the (possibly new) active model.
     try {
       await api.sendMessage(conversationId, text, selection.provider, selection.modelId);
-      setMessages(await api.getMessages(conversationId));
+      await reload();
       setSendError(null);
       setRetry(null);
-      syncActiveFromSelection();
+      syncActive(selection.provider, selection.modelId);
     } catch (err) {
       if (err instanceof ApiError && err.status === 502) {
         // Provider failed, but the user message was persisted (write-ahead).
         try {
-          const msgs = await api.getMessages(conversationId);
-          setMessages(msgs);
-          captureRetry(msgs);
+          captureRetry(await reload());
         } catch {
           /* ignore refetch failure */
         }
@@ -236,14 +258,14 @@ export function ChatWorkspace({
         selection.modelId,
         retry.messageId,
       );
-      setMessages(await api.getMessages(conversationId));
+      await reload();
       setSendError(null);
       setRetry(null);
-      syncActiveFromSelection();
+      syncActive(selection.provider, selection.modelId);
     } catch (err) {
       if (err instanceof ApiError && err.status === 502) {
         try {
-          setMessages(await api.getMessages(conversationId));
+          await reload();
         } catch {
           /* ignore */
         }
@@ -257,6 +279,97 @@ export function ChatWorkspace({
       }
     } finally {
       setRetrying(false);
+    }
+  }
+
+  function handleMultiModeChange(v: boolean) {
+    setMultiMode(v);
+    if (v && multiTargets.length === 0) setMultiTargets([selection]);
+  }
+
+  async function handleMultiSend(text: string, targets: ModelSelection[]) {
+    try {
+      const result = await api.multiSend(conversationId, text, targets);
+      const errs: MultiModelError[] = result.responses
+        .filter((r) => r.error)
+        .map((r) => ({
+          provider: r.provider,
+          modelId: r.modelId,
+          category: r.error!.category,
+          message: r.error!.message,
+        }));
+      setGroupErrors((prev) => ({ ...prev, [result.group.id]: errs }));
+      await reload();
+      setSendError(null);
+      setRetry(null);
+      const firstOk = result.responses.find((r) => r.message)?.message;
+      if (firstOk) syncActive(firstOk.provider ?? null, firstOk.modelId ?? null);
+    } catch (err) {
+      setSendError({
+        category: err instanceof ApiError ? err.category : undefined,
+        message:
+          err instanceof ApiError ? err.message : "Multi-model send failed.",
+      });
+      throw err; // keep the draft
+    }
+  }
+
+  async function handleGroupSelect(groupId: string, messageId: string) {
+    setBusyGroupId(groupId);
+    try {
+      const g = await api.selectGroupMessage(groupId, messageId);
+      setGroups((prev) => ({ ...prev, [g.id]: g }));
+      const msg = messages.find((m) => m.id === messageId);
+      if (msg) syncActive(msg.provider ?? null, msg.modelId ?? null);
+      setCtxVersion((v) => v + 1);
+    } catch {
+      /* ignore */
+    } finally {
+      setBusyGroupId(null);
+    }
+  }
+
+  async function handleCritique(
+    groupId: string,
+    subjectId: string,
+    target: ModelSelection,
+  ) {
+    setBusyGroupId(groupId);
+    try {
+      await api.compare(conversationId, subjectId, target.provider, target.modelId);
+      await reload();
+    } catch (err) {
+      setSendError({
+        category: err instanceof ApiError ? err.category : undefined,
+        message: err instanceof ApiError ? err.message : "Critique failed.",
+      });
+    } finally {
+      setBusyGroupId(null);
+    }
+  }
+
+  async function handleSynthesize(
+    groupId: string,
+    sourceIds: string[],
+    target: ModelSelection,
+  ) {
+    setBusyGroupId(groupId);
+    try {
+      const res = await api.synthesize(
+        conversationId,
+        sourceIds,
+        target.provider,
+        target.modelId,
+      );
+      await reload();
+      syncActive(res.message.provider ?? null, res.message.modelId ?? null);
+    } catch (err) {
+      setSendError({
+        category: err instanceof ApiError ? err.category : undefined,
+        message: err instanceof ApiError ? err.message : "Synthesis failed.",
+      });
+    } finally {
+      setBusyGroupId(null);
     }
   }
 
@@ -281,7 +394,7 @@ export function ChatWorkspace({
       project={project}
       instructions={instructions}
       conversationId={conversationId}
-      refreshKey={messages.length}
+      refreshKey={ctxVersion}
     />
   );
 
@@ -311,13 +424,22 @@ export function ChatWorkspace({
                   Start the conversation
                 </p>
                 <p className="mt-1 text-sm text-secondary">
-                  Send a message below. Replies come from the stub echo adapter
-                  until Phase 4 adds real providers.
+                  Send a message below, or enable Multi-model to ask several
+                  configured models at once and compare them.
                 </p>
               </div>
             </div>
           ) : (
-            <MessageTimeline messages={messages} />
+            <MessageTimeline
+              messages={messages}
+              groups={groups}
+              groupErrors={groupErrors}
+              targets={modelOptions.filter((o) => o.provider !== "stub")}
+              busyGroupId={busyGroupId}
+              onSelect={handleGroupSelect}
+              onCritique={handleCritique}
+              onSynthesize={handleSynthesize}
+            />
           )}
           <div ref={bottomRef} />
         </div>
@@ -378,9 +500,14 @@ export function ChatWorkspace({
 
         <ChatComposer
           onSend={handleSend}
+          onSendMulti={handleMultiSend}
           options={modelOptions}
           selection={selection}
           onSelect={setSelection}
+          multiMode={multiMode}
+          onMultiModeChange={handleMultiModeChange}
+          multiTargets={multiTargets}
+          onMultiTargetsChange={setMultiTargets}
         />
       </div>
 

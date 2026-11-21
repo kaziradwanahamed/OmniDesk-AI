@@ -35,6 +35,10 @@ export interface ChatMessage {
   createdAt: string;
   /** Links an assistant turn to the auditable context snapshot it was sent with. */
   contextSnapshotId?: string | null;
+  /** Set on parallel multi-model responses + their critiques/syntheses. */
+  groupId?: string | null;
+  /** Provenance for derived (critique/synthesis) messages. */
+  metadata?: Record<string, unknown> | null;
   /** Present on system_event rows (e.g. a mid-conversation model switch).
    * `provider` is a free string ("stub" and future adapters are shown honestly). */
   event?: {
@@ -164,6 +168,39 @@ export interface SummaryStatus {
   unsummarizedCount: number;
   triggerThreshold: number;
   needsSummary: boolean;
+}
+
+/** A multi-model parallel-response group. */
+export interface MessageGroupInfo {
+  id: string;
+  conversationId: string;
+  userMessageId: string | null;
+  selectedMessageId: string | null;
+  kind: string;
+  createdAt: string;
+}
+
+export interface MultiTarget {
+  provider: string;
+  modelId: string;
+}
+
+export interface MultiResponse {
+  provider: string;
+  modelId: string;
+  message: ChatMessage | null;
+  error: { category: string; message: string } | null;
+}
+
+export interface MultiSendResult {
+  group: MessageGroupInfo;
+  userMessage: ChatMessage;
+  responses: MultiResponse[];
+}
+
+export interface DerivedResult {
+  message: ChatMessage;
+  group: MessageGroupInfo | null;
 }
 
 export type ProviderErrorCategory =

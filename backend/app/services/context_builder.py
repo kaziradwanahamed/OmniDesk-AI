@@ -34,6 +34,7 @@ from app.adapters.base import CanonicalMessage, ProviderError, ProviderRequest
 from app.core.config import get_settings
 from app.models.context_snapshot import ContextSnapshot
 from app.models.conversation import Conversation, Message
+from app.models.message_group import MessageGroup
 from app.models.project import Project
 from app.services import memory_service, project_service, summarization_service
 from app.services.token_estimate import (
@@ -206,6 +207,15 @@ def _format_with_provenance(
     return out
 
 
+async def _load_group_selection(
+    db: AsyncSession, conversation_id: uuid.UUID
+) -> dict[uuid.UUID, uuid.UUID | None]:
+    stmt = select(MessageGroup.id, MessageGroup.selected_message_id).where(
+        MessageGroup.conversation_id == conversation_id
+    )
+    return {gid: sel for gid, sel in (await db.execute(stmt)).all()}
+
+
 async def _load_history(
     db: AsyncSession,
     conversation_id: uuid.UUID,
@@ -214,7 +224,11 @@ async def _load_history(
 ) -> list[Message]:
     """Chronological user/assistant turns after ``min_sequence`` (messages the
     active summary already covers are excluded; system_event rows never enter
-    provider arrays)."""
+    provider arrays).
+
+    For multi-model groups, only the group's ``selected_message_id`` (or, absent
+    an explicit selection, its earliest response) enters the array — so the N
+    parallel responses never triple future context, while all stay stored."""
     stmt = (
         select(Message)
         .where(
@@ -223,12 +237,31 @@ async def _load_history(
         )
         .order_by(Message.sequence_no.asc())
     )
-    rows = (await db.execute(stmt)).scalars().all()
-    return [
+    rows = [
         m
-        for m in rows
+        for m in (await db.execute(stmt)).scalars().all()
         if m.role in ("user", "assistant") and m.id != exclude_message_id
     ]
+
+    if not any(m.group_id is not None for m in rows):
+        return rows
+
+    selection = await _load_group_selection(db, conversation_id)
+    # Default each in-window group to its earliest response (rows are ascending).
+    first_of_group: dict[uuid.UUID, uuid.UUID] = {}
+    for m in rows:
+        if m.group_id is not None and m.group_id not in first_of_group:
+            first_of_group[m.group_id] = m.id
+
+    kept: list[Message] = []
+    for m in rows:
+        if m.group_id is None:
+            kept.append(m)
+            continue
+        chosen = selection.get(m.group_id) or first_of_group.get(m.group_id)
+        if m.id == chosen:
+            kept.append(m)
+    return kept
 
 
 # ----------------------------------- build -----------------------------------

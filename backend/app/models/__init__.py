@@ -4,6 +4,7 @@ from app.db.base import Base
 from app.models.context_snapshot import ContextSnapshot
 from app.models.context_summary import ConversationSummary
 from app.models.conversation import Conversation, Message
+from app.models.message_group import MessageGroup
 from app.models.project import (
     Project,
     ProjectDecision,
@@ -26,4 +27,5 @@ __all__ = [
     "UsageRecord",
     "ContextSnapshot",
     "ConversationSummary",
+    "MessageGroup",
 ]
