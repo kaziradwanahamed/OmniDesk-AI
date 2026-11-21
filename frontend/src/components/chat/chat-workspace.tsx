@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Loader2, X } from "lucide-react";
+import { AlertTriangle, Loader2, RefreshCw, X } from "lucide-react";
 import { ChatTopBar } from "./chat-top-bar";
 import { MessageTimeline } from "./message-timeline";
 import {
@@ -10,6 +10,7 @@ import {
   type ModelSelection,
 } from "./chat-composer";
 import { LiveContextPanel } from "./live-context-panel";
+import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { PROVIDERS } from "@/lib/providers";
 import { useConversations } from "@/components/conversations/conversations-provider";
@@ -64,6 +65,10 @@ export function ChatWorkspace({
     provider: "stub",
     modelId: "stub-echo",
   });
+  const [retry, setRetry] = useState<{ messageId: string; content: string } | null>(
+    null,
+  );
+  const [retrying, setRetrying] = useState(false);
 
   const conversation = conversations.find((c) => c.id === conversationId) ?? null;
   const project = projects.find((p) => p.id === projectId) ?? null;
@@ -135,42 +140,123 @@ export function ChatWorkspace({
     else setMobileInspector((v) => !v);
   }
 
+  const willSwitch =
+    !!conversation?.activeProvider &&
+    (conversation.activeProvider !== selection.provider ||
+      conversation.activeModelId !== selection.modelId);
+
+  /** Explicitly switch the active model (recording a system_event divider) when
+   * the composer selection differs from the conversation's active model. The
+   * first turn (no active model yet) switches silently — nothing to switch from. */
+  async function maybeSwitch(): Promise<void> {
+    if (!conversation || !willSwitch) return;
+    const res = await api.switchModel(
+      conversationId,
+      selection.provider,
+      selection.modelId,
+    );
+    updateConversationLocal({
+      ...conversation,
+      activeProvider: res.conversation.activeProvider,
+      activeModelId: res.conversation.activeModelId,
+      updatedAt: res.conversation.updatedAt,
+    });
+  }
+
+  function syncActiveFromSelection() {
+    if (conversation) {
+      updateConversationLocal({
+        ...conversation,
+        activeProvider: selection.provider,
+        activeModelId: selection.modelId,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  function captureRetry(msgs: ChatMessage[]) {
+    const lastUser = [...msgs].reverse().find((m) => m.role === "user");
+    setRetry(
+      lastUser ? { messageId: lastUser.id, content: lastUser.content } : null,
+    );
+  }
+
   async function handleSend(text: string) {
+    // 1. Switch the model first (divider) if the selection changed.
     try {
-      const { userMessage, assistantMessage } = await api.sendMessage(
-        conversationId,
-        text,
-        selection.provider,
-        selection.modelId,
-      );
-      setMessages((prev) => [...prev, userMessage, assistantMessage]);
+      await maybeSwitch();
+    } catch (err) {
+      setSendError({
+        category: err instanceof ApiError ? err.category : undefined,
+        message:
+          err instanceof ApiError ? err.message : "Could not switch model.",
+      });
+      throw err; // nothing sent — keep the draft
+    }
+    // 2. Send through the (possibly new) active model.
+    try {
+      await api.sendMessage(conversationId, text, selection.provider, selection.modelId);
+      setMessages(await api.getMessages(conversationId));
       setSendError(null);
-      if (conversation) {
-        updateConversationLocal({
-          ...conversation,
-          activeProvider: assistantMessage.provider ?? null,
-          activeModelId: assistantMessage.modelId ?? null,
-          updatedAt: new Date().toISOString(),
-        });
-      }
+      setRetry(null);
+      syncActiveFromSelection();
     } catch (err) {
       if (err instanceof ApiError && err.status === 502) {
         // Provider failed, but the user message was persisted (write-ahead).
         try {
-          setMessages(await api.getMessages(conversationId));
+          const msgs = await api.getMessages(conversationId);
+          setMessages(msgs);
+          captureRetry(msgs);
         } catch {
           /* ignore refetch failure */
         }
         setSendError({ category: err.category, message: err.message });
-        return; // message was sent; let the composer clear
+        return; // message was saved; let the composer clear
       }
-      // Network/other failure — message not saved; preserve the draft.
       setSendError({
         category: err instanceof ApiError ? err.category : undefined,
         message:
           err instanceof ApiError ? err.message : "Could not send message.",
       });
-      throw err;
+      throw err; // network/other — message not saved; preserve the draft
+    }
+  }
+
+  /** "Switch Model & Retry": reuse the preserved user message (no duplicate),
+   * switching to the newly-selected model first when it changed. */
+  async function handleRetry() {
+    if (!retry || retrying) return;
+    setRetrying(true);
+    try {
+      await maybeSwitch();
+      await api.sendMessage(
+        conversationId,
+        retry.content,
+        selection.provider,
+        selection.modelId,
+        retry.messageId,
+      );
+      setMessages(await api.getMessages(conversationId));
+      setSendError(null);
+      setRetry(null);
+      syncActiveFromSelection();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 502) {
+        try {
+          setMessages(await api.getMessages(conversationId));
+        } catch {
+          /* ignore */
+        }
+        setSendError({ category: err.category, message: err.message });
+        // keep `retry` so the user can pick yet another model
+      } else {
+        setSendError({
+          category: err instanceof ApiError ? err.category : undefined,
+          message: err instanceof ApiError ? err.message : "Retry failed.",
+        });
+      }
+    } finally {
+      setRetrying(false);
     }
   }
 
@@ -190,7 +276,14 @@ export function ChatWorkspace({
     updatedAt: new Date().toISOString(),
   };
 
-  const panel = <LiveContextPanel project={project} instructions={instructions} />;
+  const panel = (
+    <LiveContextPanel
+      project={project}
+      instructions={instructions}
+      conversationId={conversationId}
+      refreshKey={messages.length}
+    />
+  );
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -240,10 +333,36 @@ export function ChatWorkspace({
                     : "Send failed"}
                 </p>
                 <p className="text-secondary">{sendError.message}</p>
-                <p className="mt-0.5 text-xs text-tertiary">
-                  Your message and history are preserved. Pick another configured
-                  model in the composer below and resend.
-                </p>
+                {retry ? (
+                  <>
+                    <p className="mt-0.5 text-xs text-tertiary">
+                      Your message and history are preserved. Pick a different
+                      model in the composer below, then retry.
+                    </p>
+                    <div className="mt-2">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={handleRetry}
+                        disabled={retrying}
+                      >
+                        {retrying ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <RefreshCw className="h-3.5 w-3.5" />
+                        )}
+                        {willSwitch
+                          ? `Switch to ${selection.modelId} & Retry`
+                          : `Retry with ${selection.modelId}`}
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  <p className="mt-0.5 text-xs text-tertiary">
+                    Your draft is preserved. Pick another configured model in the
+                    composer below and resend.
+                  </p>
+                )}
               </div>
               <button
                 type="button"

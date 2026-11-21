@@ -10,15 +10,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.base import (
-    CanonicalMessage,
     NormalizedUsage,
     ProviderError,
-    ProviderRequest,
     ProviderResponse,
 )
 from app.adapters.registry import get_adapter
 from app.models.conversation import Conversation, Message
-from app.services import project_service, provider_key_service, usage_service
+from app.services import context_builder, provider_key_service, usage_service
 
 DEFAULT_PROVIDER = "stub"
 DEFAULT_MODEL = "stub-echo"
@@ -100,11 +98,6 @@ async def _append(
     return msg
 
 
-async def _system_prompt(db: AsyncSession, project_id: uuid.UUID) -> str:
-    instructions = await project_service.get_active_instructions(db, project_id)
-    return instructions.content if instructions else ""
-
-
 async def _resolve_target(
     db: AsyncSession,
     conversation: Conversation,
@@ -139,17 +132,28 @@ async def _resolve_target(
     return provider, model_id, api_key
 
 
-def _canonical_history(messages: list[Message]) -> list[CanonicalMessage]:
-    return [
-        CanonicalMessage(
-            role=m.role,  # type: ignore[arg-type]
-            content=m.content,
-            source_provider=m.provider,
-            source_model_id=m.model_id,
-        )
-        for m in messages
-        if m.role in ("user", "assistant")
-    ]
+async def _resolve_user_message(
+    db: AsyncSession,
+    conversation_id: uuid.UUID,
+    content: str,
+    retry_message_id: uuid.UUID | None,
+) -> Message:
+    """Reuse the already-saved user row on a retry (no duplicate), otherwise
+    write-ahead a fresh user message and commit it."""
+    if retry_message_id is not None:
+        existing = await db.get(Message, retry_message_id)
+        if (
+            existing is not None
+            and existing.conversation_id == conversation_id
+            and existing.role == "user"
+        ):
+            return existing
+    msg = await _append(
+        db, conversation_id, role="user", content=content, status="completed"
+    )
+    await db.commit()
+    await db.refresh(msg)
+    return msg
 
 
 async def send_message(
@@ -159,29 +163,32 @@ async def send_message(
     user_id: uuid.UUID,
     provider: str | None = None,
     model_id: str | None = None,
+    retry_message_id: uuid.UUID | None = None,
 ) -> tuple[Message, Message]:
     """Non-streaming write-ahead send. Misconfig fails before persisting; provider
-    errors after the user message is committed preserve history."""
+    errors after the user message is committed preserve history. On retry the
+    prior user message is reused instead of duplicated."""
     provider, model_id, api_key = await _resolve_target(
         db, conversation, user_id, provider, model_id
     )
 
-    user_msg = await _append(
-        db, conversation.id, role="user", content=content, status="completed"
+    user_msg = await _resolve_user_message(
+        db, conversation.id, content, retry_message_id
     )
-    await db.commit()
-    await db.refresh(user_msg)
 
-    history = await list_messages(db, conversation.id)
-    req = ProviderRequest(
-        model_id=model_id,
-        system_prompt=await _system_prompt(db, conversation.project_id),
-        messages=_canonical_history(history),
+    built = await context_builder.build(
+        db,
+        conversation=conversation,
+        target_provider=provider,
+        target_model_id=model_id,
+        user_message_content=content,
+        exclude_message_id=user_msg.id,
+        persist=True,
     )
 
     adapter = get_adapter(provider)
     started = time.perf_counter()
-    resp = await adapter.generate(req, api_key)
+    resp = await adapter.generate(built.provider_request, api_key)
     latency_ms = int((time.perf_counter() - started) * 1000)
 
     assistant_msg = await _append(
@@ -192,6 +199,7 @@ async def send_message(
         provider=resp.provider,
         model_id=resp.model_id,
         status="completed",
+        context_snapshot_id=built.snapshot_id,
         input_tokens=resp.usage.input_tokens,
         output_tokens=resp.usage.output_tokens,
         total_tokens=resp.usage.total_tokens,
@@ -213,8 +221,10 @@ async def stream_message(
     user_id: uuid.UUID,
     provider: str | None = None,
     model_id: str | None = None,
+    retry_message_id: uuid.UUID | None = None,
 ) -> AsyncIterator[tuple[str, dict]]:
-    """Yield (event_name, payload) for SSE. Write-ahead + history-preserving."""
+    """Yield (event_name, payload) for SSE. Write-ahead + history-preserving. On
+    retry the prior user message is reused instead of duplicated."""
     try:
         provider, model_id, api_key = await _resolve_target(
             db, conversation, user_id, provider, model_id
@@ -230,22 +240,36 @@ async def stream_message(
         )
         return
 
-    user_msg = await _append(
-        db, conversation.id, role="user", content=content, status="completed"
+    user_msg = await _resolve_user_message(
+        db, conversation.id, content, retry_message_id
     )
-    await db.commit()
-    await db.refresh(user_msg)
     yield (
         "user_message_saved",
         {"message_id": str(user_msg.id), "sequence_no": user_msg.sequence_no},
     )
 
-    history = await list_messages(db, conversation.id)
-    req = ProviderRequest(
-        model_id=model_id,
-        system_prompt=await _system_prompt(db, conversation.project_id),
-        messages=_canonical_history(history),
-    )
+    try:
+        built = await context_builder.build(
+            db,
+            conversation=conversation,
+            target_provider=provider,
+            target_model_id=model_id,
+            user_message_content=content,
+            exclude_message_id=user_msg.id,
+            persist=True,
+        )
+    except ProviderError as err:
+        yield (
+            "provider_error",
+            {
+                "category": err.category,
+                "message": err.user_message,
+                "retry_after_seconds": err.retry_after_seconds,
+                "retry_message_id": str(user_msg.id),
+            },
+        )
+        return
+    yield ("context_ready", built.snapshot_summary_dict())
 
     adapter = get_adapter(provider)
     accumulated: list[str] = []
@@ -254,7 +278,7 @@ async def stream_message(
     finish_reason: str | None = None
     started = time.perf_counter()
     try:
-        async for chunk in adapter.stream(req, api_key):
+        async for chunk in adapter.stream(built.provider_request, api_key):
             if chunk.delta_text:
                 accumulated.append(chunk.delta_text)
                 yield ("delta", {"text": chunk.delta_text})
@@ -284,6 +308,7 @@ async def stream_message(
         provider=provider,
         model_id=model_id,
         status="completed",
+        context_snapshot_id=built.snapshot_id,
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         total_tokens=usage.total_tokens,
@@ -325,3 +350,51 @@ async def stream_message(
             "provider_request_id": request_id,
         },
     )
+
+
+async def switch_model(
+    db: AsyncSession,
+    conversation: Conversation,
+    user_id: uuid.UUID,
+    provider: str,
+    model_id: str,
+) -> tuple[Conversation, Message | None]:
+    """Seamless manual model switch within one conversation.
+
+    Validates the target is configured/enabled (raising ProviderError otherwise —
+    never a silent switch), then updates ``active_provider``/``active_model_id``
+    in place and records a ``system_event`` divider row. The conversation is
+    never recreated and no history is touched. Returns the updated conversation
+    and the divider row (``None`` when the target already matched the active
+    model, i.e. a no-op)."""
+    resolved_provider, resolved_model, _ = await _resolve_target(
+        db, conversation, user_id, provider, model_id
+    )
+
+    old_provider = conversation.active_provider
+    old_model = conversation.active_model_id
+    if old_provider == resolved_provider and old_model == resolved_model:
+        return conversation, None
+
+    event = await _append(
+        db,
+        conversation.id,
+        role="system_event",
+        content=(
+            f"Continuing this conversation with {resolved_provider} "
+            f"({resolved_model}) using the shared project context."
+        ),
+        provider=resolved_provider,
+        model_id=resolved_model,
+        metadata_json={
+            "event": "model_switched",
+            "from": {"provider": old_provider, "model_id": old_model},
+            "to": {"provider": resolved_provider, "model_id": resolved_model},
+        },
+    )
+    conversation.active_provider = resolved_provider
+    conversation.active_model_id = resolved_model
+    await db.commit()
+    await db.refresh(event)
+    await db.refresh(conversation)
+    return conversation, event

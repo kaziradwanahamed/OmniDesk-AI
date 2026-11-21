@@ -45,6 +45,8 @@ class MessageOut(BaseModel):
     total_tokens: int | None = None
     latency_ms: int | None = None
     provider_request_id: str | None = None
+    context_snapshot_id: uuid.UUID | None = None
+    metadata_json: dict = {}
     created_at: datetime
 
 
@@ -52,6 +54,9 @@ class MessageSendIn(BaseModel):
     content: str = Field(min_length=1, max_length=50_000)
     provider: str | None = None
     model_id: str | None = None
+    # When retrying a turn that failed after the user message was saved
+    # (write-ahead), reuse that row instead of duplicating it.
+    retry_message_id: uuid.UUID | None = None
 
 
 class MessageSendOut(BaseModel):

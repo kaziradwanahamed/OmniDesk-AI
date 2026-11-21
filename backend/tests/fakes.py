@@ -39,12 +39,14 @@ class FakeOpenAI:
         self._create_error = create_error
         self._models = models or []
         self._models_error = models_error
+        self.last_kwargs: dict | None = None
         self.chat = SimpleNamespace(
             completions=SimpleNamespace(create=self._create)
         )
         self.models = SimpleNamespace(list=self._list)
 
     async def _create(self, **kwargs):
+        self.last_kwargs = kwargs
         if self._create_error is not None:
             raise self._create_error
         return self._completion
@@ -127,10 +129,12 @@ class FakeAnthropic:
         self._create_error = create_error
         self._models = models or []
         self._models_error = models_error
+        self.last_kwargs: dict | None = None
         self.messages = SimpleNamespace(create=self._create)
         self.models = SimpleNamespace(list=self._list)
 
     async def _create(self, **kwargs):
+        self.last_kwargs = kwargs
         if self._create_error is not None:
             raise self._create_error
         return self._message
@@ -199,8 +203,10 @@ class _FakeGeminiModels:
         self._error = error
         self._models = models or []
         self._models_error = models_error
+        self.last_kwargs: dict | None = None
 
     async def generate_content(self, **kwargs):
+        self.last_kwargs = kwargs
         if self._error is not None:
             raise self._error
         return self._response

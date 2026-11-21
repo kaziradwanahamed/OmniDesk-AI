@@ -33,11 +33,14 @@ export interface ChatMessage {
   usage?: NormalizedUsage | null;
   latencyMs?: number | null;
   createdAt: string;
-  /** Present on system_event rows (e.g. a mid-conversation model switch). */
+  /** Links an assistant turn to the auditable context snapshot it was sent with. */
+  contextSnapshotId?: string | null;
+  /** Present on system_event rows (e.g. a mid-conversation model switch).
+   * `provider` is a free string ("stub" and future adapters are shown honestly). */
   event?: {
     type: "model_switched";
-    from?: ProviderModel | null;
-    to?: ProviderModel | null;
+    from?: { provider: string; modelId: string | null } | null;
+    to?: { provider: string; modelId: string | null } | null;
   } | null;
 }
 
@@ -122,6 +125,19 @@ export interface ContextSnapshot {
   estimatedInputTokens: number;
   includedLayers: ContextLayer[];
   omittedItems: string[];
+}
+
+/** Dry-run of the backend 8-layer ContextBuilder for the next turn. */
+export interface ContextPreview {
+  targetProvider: string;
+  targetModelId: string;
+  tokenBudget: number;
+  estimatedInputTokens: number;
+  /** Layer tokens from the backend audit, e.g. "system", "decisions:3". */
+  includedLayers: string[];
+  omittedItems: Array<Record<string, unknown>>;
+  recentMessageCount: number;
+  systemPrompt: string;
 }
 
 export type ProviderErrorCategory =

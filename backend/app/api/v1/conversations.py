@@ -80,7 +80,13 @@ async def send_message(
 ):
     try:
         user_msg, assistant_msg = await conversation_service.send_message(
-            db, conversation, data.content, user.id, data.provider, data.model_id
+            db,
+            conversation,
+            data.content,
+            user.id,
+            data.provider,
+            data.model_id,
+            data.retry_message_id,
         )
     except ProviderError as err:
         return JSONResponse(
@@ -109,7 +115,13 @@ async def stream_message(
 ) -> StreamingResponse:
     async def event_source():
         async for event, payload in conversation_service.stream_message(
-            db, conversation, data.content, user.id, data.provider, data.model_id
+            db,
+            conversation,
+            data.content,
+            user.id,
+            data.provider,
+            data.model_id,
+            data.retry_message_id,
         ):
             yield f"event: {event}\ndata: {json.dumps(payload)}\n\n"
 

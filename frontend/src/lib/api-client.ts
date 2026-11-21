@@ -13,11 +13,16 @@ import type {
   AuthUser,
   ChatMessage,
   Conversation,
+  ContextPreview,
   MessageRole,
   MessageStatus,
   Project,
+  ProjectDecision,
   ProjectInstructions,
   ProjectStatus,
+  ProjectTask,
+  DecisionStatus,
+  TaskStatus,
 } from "./types";
 
 const API_BASE =
@@ -160,6 +165,8 @@ interface ApiMessage {
   total_tokens: number | null;
   latency_ms: number | null;
   provider_request_id: string | null;
+  context_snapshot_id: string | null;
+  metadata_json: Record<string, unknown> | null;
   created_at: string;
 }
 
@@ -207,6 +214,23 @@ function mapConversation(c: ApiConversation): Conversation {
   };
 }
 
+function mapSwitchEvent(meta: Record<string, unknown> | null): ChatMessage["event"] {
+  if (!meta || meta.event !== "model_switched") return null;
+  const side = (v: unknown) => {
+    if (!v || typeof v !== "object") return null;
+    const o = v as { provider?: unknown; model_id?: unknown };
+    return {
+      provider: typeof o.provider === "string" ? o.provider : "",
+      modelId: typeof o.model_id === "string" ? o.model_id : null,
+    };
+  };
+  return {
+    type: "model_switched",
+    from: side(meta.from),
+    to: side(meta.to),
+  };
+}
+
 function mapMessage(m: ApiMessage): ChatMessage {
   return {
     id: m.id,
@@ -221,6 +245,8 @@ function mapMessage(m: ApiMessage): ChatMessage {
       totalTokens: m.total_tokens,
     },
     latencyMs: m.latency_ms,
+    contextSnapshotId: m.context_snapshot_id,
+    event: m.role === "system_event" ? mapSwitchEvent(m.metadata_json) : null,
     createdAt: m.created_at,
   };
 }
@@ -317,6 +343,66 @@ function toApiProjectBody(input: ProjectInput): Record<string, unknown> {
   if (input.status !== undefined) body.status = input.status;
   if (input.progressNotes !== undefined) body.progress_notes = input.progressNotes;
   return body;
+}
+
+interface ApiDecision {
+  id: string;
+  project_id: string;
+  title: string;
+  rationale: string | null;
+  status: string;
+  source_message_id: string | null;
+  created_at: string;
+}
+interface ApiTask {
+  id: string;
+  project_id: string;
+  title: string;
+  details: string | null;
+  status: string;
+  is_active_task: boolean;
+  updated_at: string;
+}
+interface ApiContextPreview {
+  target_provider: string;
+  target_model_id: string;
+  token_budget: number;
+  estimated_input_tokens: number;
+  included_layers: string[];
+  omitted_items: Record<string, unknown>[];
+  recent_message_count: number;
+  system_prompt: string;
+}
+
+function mapDecision(d: ApiDecision): ProjectDecision {
+  return {
+    id: d.id,
+    title: d.title,
+    rationale: d.rationale ?? undefined,
+    status: d.status as DecisionStatus,
+    createdAt: d.created_at,
+  };
+}
+function mapTask(t: ApiTask): ProjectTask {
+  return {
+    id: t.id,
+    title: t.title,
+    details: t.details ?? undefined,
+    status: t.status as TaskStatus,
+    isActive: t.is_active_task,
+  };
+}
+function mapContextPreview(p: ApiContextPreview): ContextPreview {
+  return {
+    targetProvider: p.target_provider,
+    targetModelId: p.target_model_id,
+    tokenBudget: p.token_budget,
+    estimatedInputTokens: p.estimated_input_tokens,
+    includedLayers: p.included_layers,
+    omittedItems: p.omitted_items,
+    recentMessageCount: p.recent_message_count,
+    systemPrompt: p.system_prompt,
+  };
 }
 
 export const api = {
@@ -430,6 +516,7 @@ export const api = {
     content: string,
     provider?: string,
     modelId?: string,
+    retryMessageId?: string,
   ): Promise<{ userMessage: ChatMessage; assistantMessage: ChatMessage }> {
     const res = await request<{
       user_message: ApiMessage;
@@ -438,10 +525,117 @@ export const api = {
       content,
       provider: provider ?? null,
       model_id: modelId ?? null,
+      retry_message_id: retryMessageId ?? null,
     });
     return {
       userMessage: mapMessage(res.user_message),
       assistantMessage: mapMessage(res.assistant_message),
+    };
+  },
+
+  // --- project memory (decisions & tasks) ---
+  async listDecisions(projectId: string): Promise<ProjectDecision[]> {
+    return (
+      await request<ApiDecision[]>("GET", `/projects/${projectId}/decisions`)
+    ).map(mapDecision);
+  },
+  async createDecision(
+    projectId: string,
+    title: string,
+    rationale?: string,
+  ): Promise<ProjectDecision> {
+    return mapDecision(
+      await request<ApiDecision>("POST", `/projects/${projectId}/decisions`, {
+        title,
+        rationale: rationale ?? null,
+      }),
+    );
+  },
+  async updateDecision(
+    projectId: string,
+    decisionId: string,
+    patch: { title?: string; rationale?: string; status?: DecisionStatus },
+  ): Promise<ProjectDecision> {
+    return mapDecision(
+      await request<ApiDecision>(
+        "PATCH",
+        `/projects/${projectId}/decisions/${decisionId}`,
+        patch,
+      ),
+    );
+  },
+  async deleteDecision(projectId: string, decisionId: string): Promise<void> {
+    await request<void>(
+      "DELETE",
+      `/projects/${projectId}/decisions/${decisionId}`,
+    );
+  },
+  async listTasks(projectId: string): Promise<ProjectTask[]> {
+    return (
+      await request<ApiTask[]>("GET", `/projects/${projectId}/tasks`)
+    ).map(mapTask);
+  },
+  async createTask(
+    projectId: string,
+    title: string,
+    details?: string,
+  ): Promise<ProjectTask> {
+    return mapTask(
+      await request<ApiTask>("POST", `/projects/${projectId}/tasks`, {
+        title,
+        details: details ?? null,
+      }),
+    );
+  },
+  async updateTask(
+    projectId: string,
+    taskId: string,
+    patch: { title?: string; details?: string; status?: TaskStatus },
+  ): Promise<ProjectTask> {
+    return mapTask(
+      await request<ApiTask>(
+        "PATCH",
+        `/projects/${projectId}/tasks/${taskId}`,
+        patch,
+      ),
+    );
+  },
+  async activateTask(projectId: string, taskId: string): Promise<ProjectTask> {
+    return mapTask(
+      await request<ApiTask>(
+        "PATCH",
+        `/projects/${projectId}/tasks/${taskId}/activate`,
+      ),
+    );
+  },
+  async deleteTask(projectId: string, taskId: string): Promise<void> {
+    await request<void>("DELETE", `/projects/${projectId}/tasks/${taskId}`);
+  },
+
+  // --- context inspector & seamless model switching ---
+  async getContextPreview(conversationId: string): Promise<ContextPreview> {
+    return mapContextPreview(
+      await request<ApiContextPreview>(
+        "GET",
+        `/conversations/${conversationId}/context-preview`,
+      ),
+    );
+  },
+  async switchModel(
+    conversationId: string,
+    provider: string,
+    modelId: string,
+  ): Promise<{ conversation: Conversation; event: ChatMessage | null }> {
+    const res = await request<{
+      conversation: ApiConversation;
+      event: ApiMessage | null;
+    }>("PATCH", `/conversations/${conversationId}/model`, {
+      provider,
+      model_id: modelId,
+    });
+    return {
+      conversation: mapConversation(res.conversation),
+      event: res.event ? mapMessage(res.event) : null,
     };
   },
 

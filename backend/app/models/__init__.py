@@ -1,6 +1,7 @@
 """SQLAlchemy ORM models. Importing this package registers all tables on Base."""
 
 from app.db.base import Base
+from app.models.context_snapshot import ContextSnapshot
 from app.models.conversation import Conversation, Message
 from app.models.project import (
     Project,
@@ -22,4 +23,5 @@ __all__ = [
     "Message",
     "ProviderConfig",
     "UsageRecord",
+    "ContextSnapshot",
 ]

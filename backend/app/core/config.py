@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     cookie_secure: bool = False  # set true in production (HTTPS)
     cookie_samesite: str = "lax"
 
+    # --- Context assembly (Phase 6 ContextBuilder) ---
+    # Conservative, configurable INPUT token budget for the 8-layer context
+    # package. This is a safety budget, NOT an invented per-model context window
+    # (blueprint example = 16000). Tune per deployment via the environment.
+    context_input_token_budget: int = 16000
+
     # --- Provider key encryption ---
     # Fernet key (generate: python -c "from cryptography.fernet import Fernet;
     # print(Fernet.generate_key().decode())"). Encrypts stored provider API keys.
