@@ -92,7 +92,7 @@ async def test_unsupported_provider_rejected(client: AsyncClient) -> None:
     await register_user(client)
     h = csrf_headers(client)
     resp = await client.put(
-        "/api/v1/providers/gemini/key", headers=h, json={"api_key": "AIza-whatever-123"}
+        "/api/v1/providers/cohere/key", headers=h, json={"api_key": "co-whatever-123"}
     )
     assert resp.status_code == 404
 

@@ -241,8 +241,8 @@ export function ChatWorkspace({
                 </p>
                 <p className="text-secondary">{sendError.message}</p>
                 <p className="mt-0.5 text-xs text-tertiary">
-                  Your message and history are preserved. Manual model switching
-                  across real providers arrives in Phase 4.
+                  Your message and history are preserved. Pick another configured
+                  model in the composer below and resend.
                 </p>
               </div>
               <button

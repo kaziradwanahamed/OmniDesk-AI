@@ -21,16 +21,20 @@ import {
   type ProviderConfigUI,
   type TestConnectionResult,
 } from "@/lib/api-client";
+import type { Provider } from "@/lib/types";
 import { cn } from "@/lib/cn";
 
-function OpenAIProviderCard({
+function ProviderCard({
   config,
   onChanged,
 }: {
   config: ProviderConfigUI;
   onChanged: (c: ProviderConfigUI) => void;
 }) {
-  const meta = PROVIDERS.openai;
+  const provider = config.provider;
+  const label =
+    (PROVIDERS as Record<string, { label: string }>)[provider]?.label ?? provider;
+
   const [keyDraft, setKeyDraft] = useState("");
   const [savingKey, setSavingKey] = useState(false);
   const [keyError, setKeyError] = useState<string | null>(null);
@@ -47,7 +51,7 @@ function OpenAIProviderCard({
     setSavingKey(true);
     setKeyError(null);
     try {
-      onChanged(await api.setProviderKey("openai", keyDraft.trim()));
+      onChanged(await api.setProviderKey(provider, keyDraft.trim()));
       setKeyDraft("");
       setTest(null);
     } catch (e) {
@@ -59,9 +63,9 @@ function OpenAIProviderCard({
 
   async function removeKey() {
     try {
-      const updated = await api.deleteProviderKey("openai");
-      onChanged(updated);
+      onChanged(await api.deleteProviderKey(provider));
       setTest(null);
+      setEnabled(new Set());
     } catch {
       /* ignore */
     }
@@ -70,8 +74,7 @@ function OpenAIProviderCard({
   async function runTest() {
     setTesting(true);
     try {
-      const result = await api.testProvider("openai");
-      setTest(result);
+      setTest(await api.testProvider(provider));
     } catch (e) {
       setTest({
         ok: false,
@@ -88,7 +91,7 @@ function OpenAIProviderCard({
     setSavingModels(true);
     setSavedModels(false);
     try {
-      onChanged(await api.setEnabledModels("openai", [...enabled]));
+      onChanged(await api.setEnabledModels(provider, [...enabled]));
       setSavedModels(true);
       setTimeout(() => setSavedModels(false), 2000);
     } catch {
@@ -119,24 +122,21 @@ function OpenAIProviderCard({
 
   return (
     <Card className="p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <ProviderDot provider="openai" />
-          <span className="font-semibold text-primary">{meta.label}</span>
-          <span
-            className={cn(
-              "inline-flex items-center gap-1 rounded-full border border-subtle px-2 py-0.5 text-xs",
-              conn.cls,
-            )}
-          >
-            <conn.Icon className={cn("h-3 w-3", conn.spin && "animate-spin")} />
-            {conn.label}
-          </span>
-        </div>
+      <div className="flex items-center gap-2">
+        <ProviderDot provider={provider as Provider} />
+        <span className="font-semibold text-primary">{label}</span>
+        <span
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full border border-subtle px-2 py-0.5 text-xs",
+            conn.cls,
+          )}
+        >
+          <conn.Icon className={cn("h-3 w-3", conn.spin && "animate-spin")} />
+          {conn.label}
+        </span>
       </div>
 
       <div className="mt-4 space-y-4">
-        {/* API key */}
         <div>
           <label className="mb-1 block text-xs font-medium text-secondary">
             API key
@@ -157,7 +157,7 @@ function OpenAIProviderCard({
                   type="password"
                   value={keyDraft}
                   onChange={(e) => setKeyDraft(e.target.value)}
-                  placeholder="Paste your OpenAI API key (sk-…)"
+                  placeholder={`Paste your ${label} API key`}
                 />
                 <Button
                   size="sm"
@@ -175,10 +175,9 @@ function OpenAIProviderCard({
           )}
         </div>
 
-        {/* Test connection */}
         <div className="flex items-center justify-between">
           <p className="text-xs text-tertiary">
-            Test the key to load your available models from OpenAI.
+            Test the key to load your available models.
           </p>
           <Button
             variant="secondary"
@@ -197,25 +196,18 @@ function OpenAIProviderCard({
           </p>
         ) : null}
 
-        {/* Enabled models */}
         {availableModels.length ? (
           <div>
             <div className="mb-1 flex items-center justify-between">
               <label className="text-xs font-medium text-secondary">
                 Enabled models{" "}
-                <span className="text-tertiary">
-                  ({enabled.size} selected)
-                </span>
+                <span className="text-tertiary">({enabled.size} selected)</span>
               </label>
               <div className="flex items-center gap-2">
                 {savedModels ? (
                   <span className="text-xs text-success">Saved</span>
                 ) : null}
-                <Button
-                  size="sm"
-                  onClick={saveModels}
-                  disabled={savingModels}
-                >
+                <Button size="sm" onClick={saveModels} disabled={savingModels}>
                   {savingModels ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : null}
@@ -251,21 +243,6 @@ function OpenAIProviderCard({
   );
 }
 
-function ComingSoonCard({ provider }: { provider: "anthropic" | "gemini" }) {
-  const meta = PROVIDERS[provider];
-  return (
-    <Card className="flex items-center justify-between p-4 opacity-70">
-      <div className="flex items-center gap-2">
-        <ProviderDot provider={provider} />
-        <span className="font-semibold text-primary">{meta.label}</span>
-      </div>
-      <span className="rounded-full border border-subtle px-2 py-0.5 text-xs text-tertiary">
-        Available in Phase 5
-      </span>
-    </Card>
-  );
-}
-
 export default function ProvidersPage() {
   const [configs, setConfigs] = useState<ProviderConfigUI[]>([]);
   const [loading, setLoading] = useState(true);
@@ -287,21 +264,10 @@ export default function ProvidersPage() {
     };
   }, []);
 
-  const openai =
-    configs.find((c) => c.provider === "openai") ??
-    ({
-      provider: "openai",
-      configured: false,
-      keyHint: null,
-      enabledModels: [],
-      isEnabled: true,
-    } satisfies ProviderConfigUI);
-
-  function onOpenAIChanged(updated: ProviderConfigUI) {
-    setConfigs((prev) => {
-      const rest = prev.filter((c) => c.provider !== "openai");
-      return [updated, ...rest];
-    });
+  function onProviderChanged(updated: ProviderConfigUI) {
+    setConfigs((prev) =>
+      prev.map((c) => (c.provider === updated.provider ? updated : c)),
+    );
   }
 
   return (
@@ -327,11 +293,13 @@ export default function ProvidersPage() {
               <Loader2 className="h-6 w-6 animate-spin text-tertiary" />
             </div>
           ) : (
-            <>
-              <OpenAIProviderCard config={openai} onChanged={onOpenAIChanged} />
-              <ComingSoonCard provider="anthropic" />
-              <ComingSoonCard provider="gemini" />
-            </>
+            configs.map((config) => (
+              <ProviderCard
+                key={config.provider}
+                config={config}
+                onChanged={onProviderChanged}
+              />
+            ))
           )}
         </div>
       </div>

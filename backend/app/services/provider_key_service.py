@@ -17,6 +17,8 @@ from app.models.provider_config import ProviderConfig
 # Server-env fallback keys (used only when a user has no per-user key stored).
 _ENV_FALLBACK: dict[str, Callable[[], str | None]] = {
     "openai": lambda: get_settings().openai_api_key,
+    "gemini": lambda: get_settings().gemini_api_key,
+    "anthropic": lambda: get_settings().anthropic_api_key,
 }
 
 
