@@ -135,9 +135,35 @@ export interface ContextPreview {
   estimatedInputTokens: number;
   /** Layer tokens from the backend audit, e.g. "system", "decisions:3". */
   includedLayers: string[];
+  /** Per-layer estimated token counts keyed by the included-layer name. */
+  layerTokens: Record<string, number>;
   omittedItems: Array<Record<string, unknown>>;
   recentMessageCount: number;
   systemPrompt: string;
+}
+
+/** The active rolling conversation summary (L6), from the summary endpoints. */
+export interface Summary {
+  id: string;
+  conversationId: string;
+  version: number;
+  coversUpToSequence: number;
+  coveredMessageCount: number;
+  content: string;
+  estimatedTokens: number;
+  provider: string | null;
+  modelId: string | null;
+  userEdited: boolean;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SummaryStatus {
+  summary: Summary | null;
+  unsummarizedCount: number;
+  triggerThreshold: number;
+  needsSummary: boolean;
 }
 
 export type ProviderErrorCategory =

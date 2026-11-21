@@ -68,6 +68,7 @@ async def context_preview(
         token_budget=built.token_budget,
         estimated_input_tokens=built.estimated_input_tokens,
         included_layers=built.included_layers,
+        layer_tokens=built.layer_tokens,
         omitted_items=built.omitted_items,
         recent_message_count=built.recent_message_count,
         system_prompt=built.system_prompt,

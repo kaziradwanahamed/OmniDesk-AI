@@ -21,6 +21,8 @@ import type {
   ProjectInstructions,
   ProjectStatus,
   ProjectTask,
+  Summary,
+  SummaryStatus,
   DecisionStatus,
   TaskStatus,
 } from "./types";
@@ -369,9 +371,57 @@ interface ApiContextPreview {
   token_budget: number;
   estimated_input_tokens: number;
   included_layers: string[];
+  layer_tokens: Record<string, number>;
   omitted_items: Record<string, unknown>[];
   recent_message_count: number;
   system_prompt: string;
+}
+interface ApiSummary {
+  id: string;
+  conversation_id: string;
+  version: number;
+  covers_up_to_sequence: number;
+  covered_message_count: number;
+  content: string;
+  estimated_tokens: number;
+  provider: string | null;
+  model_id: string | null;
+  user_edited: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+interface ApiSummaryStatus {
+  summary: ApiSummary | null;
+  unsummarized_count: number;
+  trigger_threshold: number;
+  needs_summary: boolean;
+}
+
+function mapSummary(s: ApiSummary): Summary {
+  return {
+    id: s.id,
+    conversationId: s.conversation_id,
+    version: s.version,
+    coversUpToSequence: s.covers_up_to_sequence,
+    coveredMessageCount: s.covered_message_count,
+    content: s.content,
+    estimatedTokens: s.estimated_tokens,
+    provider: s.provider,
+    modelId: s.model_id,
+    userEdited: s.user_edited,
+    isActive: s.is_active,
+    createdAt: s.created_at,
+    updatedAt: s.updated_at,
+  };
+}
+function mapSummaryStatus(s: ApiSummaryStatus): SummaryStatus {
+  return {
+    summary: s.summary ? mapSummary(s.summary) : null,
+    unsummarizedCount: s.unsummarized_count,
+    triggerThreshold: s.trigger_threshold,
+    needsSummary: s.needs_summary,
+  };
 }
 
 function mapDecision(d: ApiDecision): ProjectDecision {
@@ -399,6 +449,7 @@ function mapContextPreview(p: ApiContextPreview): ContextPreview {
     tokenBudget: p.token_budget,
     estimatedInputTokens: p.estimated_input_tokens,
     includedLayers: p.included_layers,
+    layerTokens: p.layer_tokens,
     omittedItems: p.omitted_items,
     recentMessageCount: p.recent_message_count,
     systemPrompt: p.system_prompt,
@@ -620,6 +671,37 @@ export const api = {
         `/conversations/${conversationId}/context-preview`,
       ),
     );
+  },
+  async getSummary(conversationId: string): Promise<SummaryStatus> {
+    return mapSummaryStatus(
+      await request<ApiSummaryStatus>(
+        "GET",
+        `/conversations/${conversationId}/summary`,
+      ),
+    );
+  },
+  async refreshSummary(
+    conversationId: string,
+    provider?: string,
+    modelId?: string,
+  ): Promise<SummaryStatus> {
+    return mapSummaryStatus(
+      await request<ApiSummaryStatus>(
+        "POST",
+        `/conversations/${conversationId}/summary/refresh`,
+        { provider: provider ?? null, model_id: modelId ?? null },
+      ),
+    );
+  },
+  async editSummary(conversationId: string, content: string): Promise<Summary> {
+    return mapSummary(
+      await request<ApiSummary>("PUT", `/conversations/${conversationId}/summary`, {
+        content,
+      }),
+    );
+  },
+  async clearSummary(conversationId: string): Promise<void> {
+    await request<void>("DELETE", `/conversations/${conversationId}/summary`);
   },
   async switchModel(
     conversationId: string,

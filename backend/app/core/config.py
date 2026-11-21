@@ -43,6 +43,18 @@ class Settings(BaseSettings):
     # (blueprint example = 16000). Tune per deployment via the environment.
     context_input_token_budget: int = 16000
 
+    # --- Conversation summarization (Phase 7, L6) ---
+    # Summarize once more than this many messages sit unsummarized (blueprint: 12).
+    summary_trigger_message_count: int = 12
+    # Number of most-recent messages always kept verbatim in L7 (never summarized).
+    summary_recent_tail_messages: int = 8
+    # Max output tokens requested for the summarizer model call.
+    summary_max_output_tokens: int = 1024
+    # Best-effort auto-summarization after a chat turn crosses the threshold.
+    # OFF by default: it issues an extra provider call, so it is opt-in per
+    # deployment. When on it never blocks or fails the chat turn.
+    summary_auto_enabled: bool = False
+
     # --- Provider key encryption ---
     # Fernet key (generate: python -c "from cryptography.fernet import Fernet;
     # print(Fernet.generate_key().decode())"). Encrypts stored provider API keys.

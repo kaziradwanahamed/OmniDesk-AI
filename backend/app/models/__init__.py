@@ -2,6 +2,7 @@
 
 from app.db.base import Base
 from app.models.context_snapshot import ContextSnapshot
+from app.models.context_summary import ConversationSummary
 from app.models.conversation import Conversation, Message
 from app.models.project import (
     Project,
@@ -24,4 +25,5 @@ __all__ = [
     "ProviderConfig",
     "UsageRecord",
     "ContextSnapshot",
+    "ConversationSummary",
 ]

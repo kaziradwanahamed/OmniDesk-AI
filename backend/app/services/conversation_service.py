@@ -16,7 +16,12 @@ from app.adapters.base import (
 )
 from app.adapters.registry import get_adapter
 from app.models.conversation import Conversation, Message
-from app.services import context_builder, provider_key_service, usage_service
+from app.services import (
+    context_builder,
+    provider_key_service,
+    summarization_service,
+    usage_service,
+)
 
 DEFAULT_PROVIDER = "stub"
 DEFAULT_MODEL = "stub-echo"
@@ -211,6 +216,12 @@ async def send_message(
     conversation.active_model_id = resp.model_id
     await db.commit()
     await db.refresh(assistant_msg)
+
+    # Best-effort, opt-in rolling summary (never blocks or fails the chat turn).
+    try:
+        await summarization_service.maybe_auto_summarize(db, conversation, user_id)
+    except Exception:  # noqa: BLE001 — summarization must never break a send
+        pass
     return user_msg, assistant_msg
 
 

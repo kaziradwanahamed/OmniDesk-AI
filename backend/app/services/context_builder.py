@@ -1,4 +1,4 @@
-"""Deterministic 8-layer ContextBuilder + auditable context snapshots (Phase 6).
+"""Deterministic 8-layer ContextBuilder + auditable context snapshots.
 
 Blindly replaying the full history overflows context windows, spikes cost, and
 dilutes instructions. This module assembles a priority-ordered, token-budgeted
@@ -10,19 +10,20 @@ Priority order (Blueprint Ch. 18):
   L3  Project status + active task ........ pinned, high priority (<=20% cap)
   L4  Active decisions + constraints ...... high priority (<=20% cap)
   L5  Relevant file excerpts .............. retrieved (Phase 9 hook — empty now)
-  L6  Compact older-history summary ....... summarized (Phase 7 hook — empty now)
+  L6  Compact older-history summary ....... rolling summary (Phase 7)
   L7  Recent turns, chronological ......... floor of 60% of remaining budget
   L8  Current user message ................ mandatory
 
 The ProviderRequest carries ``system_prompt = L1+L2+L3+L4+L5+L6`` and
 ``messages = provenance(recent L7) + [L8]``. Drop/trim order is L5 -> L6 ->
-oldest L7. The canonical DB rows are NEVER mutated: cross-model provenance tags
-are applied only to the transient request copy.
+oldest L7. When an active summary (L6) exists, every message it covers
+(``sequence_no <= covers_up_to_sequence``) is represented by the summary and
+excluded from L7, so no turn is duplicated. The canonical DB rows are NEVER
+mutated: cross-model provenance tags are applied only to the transient request.
 """
 
 from __future__ import annotations
 
-import math
 import uuid
 from dataclasses import dataclass, field
 
@@ -34,16 +35,19 @@ from app.core.config import get_settings
 from app.models.context_snapshot import ContextSnapshot
 from app.models.conversation import Conversation, Message
 from app.models.project import Project
-from app.services import memory_service, project_service
-
-# Conservative cross-provider token estimator constants.
-_CHARS_PER_TOKEN = 3.5
-_PER_MESSAGE_OVERHEAD = 4
+from app.services import memory_service, project_service, summarization_service
+from app.services.token_estimate import (
+    chars_for_tokens,
+    estimate_message_tokens,
+    estimate_tokens,
+)
 
 # Fraction caps from the allocate_context algorithm.
 _PINNED_CAP_FRACTION = 0.20  # L3 and L4 each capped at 20% of the budget
 _RECENT_FLOOR_FRACTION = 0.60  # L7 floor: 60% of remaining
-_SUMMARY_FRACTION = 0.55  # L6 fill: 55% of remaining (Phase 7 hook)
+_SUMMARY_FRACTION = 0.55  # L6 fill: 55% of remaining
+
+_TRUNCATE_MARKER = " …[truncated]"
 
 # L1 — fixed app system instructions. Also carries the cross-model provenance
 # framing (Blueprint Ch. 17): a single continuous conversation may be served by
@@ -59,18 +63,6 @@ APP_SYSTEM_INSTRUCTIONS = (
 )
 
 
-def estimate_tokens(text: str) -> int:
-    """Conservative token estimate: ceil(len(text) / 3.5)."""
-    if not text:
-        return 0
-    return math.ceil(len(text) / _CHARS_PER_TOKEN)
-
-
-def estimate_message_tokens(content: str) -> int:
-    """Per-message token estimate: content estimate + a fixed per-message overhead."""
-    return estimate_tokens(content) + _PER_MESSAGE_OVERHEAD
-
-
 def _fit_or_truncate(text: str, max_tokens: int) -> tuple[str, bool]:
     """Return (text, trimmed). Empty text passes through; over-budget text is
     truncated at an estimated character boundary with a marker."""
@@ -80,12 +72,9 @@ def _fit_or_truncate(text: str, max_tokens: int) -> tuple[str, bool]:
         return "", True
     if estimate_tokens(text) <= max_tokens:
         return text, False
-    char_budget = max(0, int(max_tokens * _CHARS_PER_TOKEN) - len(_TRUNCATE_MARKER))
+    char_budget = max(0, chars_for_tokens(max_tokens) - len(_TRUNCATE_MARKER))
     truncated = text[:char_budget].rstrip()
     return truncated + _TRUNCATE_MARKER, True
-
-
-_TRUNCATE_MARKER = " …[truncated]"
 
 
 @dataclass
@@ -99,6 +88,7 @@ class BuiltContext:
     omitted_items: list[dict]
     system_prompt: str
     recent_message_count: int
+    layer_tokens: dict[str, int] = field(default_factory=dict)
     snapshot_id: uuid.UUID | None = None
     _snapshot: ContextSnapshot | None = field(default=None, repr=False)
 
@@ -132,23 +122,19 @@ def _compose_project_block(project: Project, instructions) -> str:
     return "\n".join(lines)
 
 
-def _compose_status_block(project: Project, active_task) -> tuple[str, bool, bool]:
-    """Return (text, has_status, has_active_task)."""
-    lines: list[str] = []
-    has_status = False
+def _compose_status_parts(project: Project, active_task) -> tuple[str, str]:
+    """Return (status_text, active_task_text) for L3, estimated separately."""
+    status_lines: list[str] = []
     if project.status:
-        lines.append(f"Project status: {project.status}")
-        has_status = True
+        status_lines.append(f"Project status: {project.status}")
     if project.progress_notes:
-        lines.append(f"Progress: {project.progress_notes}")
-        has_status = True
-    has_active = False
+        status_lines.append(f"Progress: {project.progress_notes}")
+    active_lines: list[str] = []
     if active_task is not None:
-        lines.append(f"Active task: {active_task.title}")
+        active_lines.append(f"Active task: {active_task.title}")
         if active_task.details:
-            lines.append(active_task.details)
-        has_active = True
-    return "\n".join(lines), has_status, has_active
+            active_lines.append(active_task.details)
+    return "\n".join(status_lines), "\n".join(active_lines)
 
 
 def _compose_decisions_block(decisions) -> str:
@@ -161,6 +147,12 @@ def _compose_decisions_block(decisions) -> str:
             line += f" — {d.rationale}"
         lines.append(line)
     return "\n".join(lines)
+
+
+def _compose_summary_block(text: str) -> str:
+    if not text:
+        return ""
+    return "Summary of older conversation history:\n" + text
 
 
 def _compose_system_prompt(blocks: list[str]) -> str:
@@ -176,7 +168,7 @@ def _select_newest(history: list[Message], budget: int) -> tuple[list[Message], 
 
     Returns (selected_chronological, dropped). Selection stops at the first
     message that does not fit so the recent window stays contiguous (older turns
-    are destined for the L6 summary in Phase 7)."""
+    are destined for the L6 summary)."""
     selected: list[Message] = []
     used = 0
     for m in reversed(history):  # newest first
@@ -215,13 +207,20 @@ def _format_with_provenance(
 
 
 async def _load_history(
-    db: AsyncSession, conversation_id: uuid.UUID, exclude_message_id: uuid.UUID | None
+    db: AsyncSession,
+    conversation_id: uuid.UUID,
+    exclude_message_id: uuid.UUID | None,
+    min_sequence: int = 0,
 ) -> list[Message]:
-    """Chronological user/assistant turns (system_event rows are excluded from
+    """Chronological user/assistant turns after ``min_sequence`` (messages the
+    active summary already covers are excluded; system_event rows never enter
     provider arrays)."""
     stmt = (
         select(Message)
-        .where(Message.conversation_id == conversation_id)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.sequence_no > min_sequence,
+        )
         .order_by(Message.sequence_no.asc())
     )
     rows = (await db.execute(stmt)).scalars().all()
@@ -259,23 +258,31 @@ async def build(
     instructions = await project_service.get_active_instructions(db, conversation.project_id)
     active_task = await memory_service.get_active_task(db, conversation.project_id)
     decisions = await memory_service.list_active_decisions(db, conversation.project_id)
-    history = await _load_history(db, conversation.id, exclude_message_id)
+    summary = await summarization_service.get_active_summary(db, conversation.id)
+
+    covers_up_to = summary.covers_up_to_sequence if summary else 0
+    history = await _load_history(db, conversation.id, exclude_message_id, covers_up_to)
 
     # Raw layers
     l1 = APP_SYSTEM_INSTRUCTIONS
     l2 = _compose_project_block(project, instructions) if project else ""
-    l3_raw, has_status, has_active = _compose_status_block(project, active_task) if project else ("", False, False)
+    status_text, active_text = (
+        _compose_status_parts(project, active_task) if project else ("", "")
+    )
+    l3_raw = "\n".join(p for p in (status_text, active_text) if p)
     l4_raw = _compose_decisions_block(decisions)
+    l6_raw = _compose_summary_block(summary.content if summary else "")
+    l5 = ""  # Phase 9: retrieved file excerpts
 
-    included: list[str] = []
     omitted: list[dict] = []
     remaining = budget
 
     # 1. Mandatory layers: L8 (current user msg) + L1 (app system) + L2 (project).
-    l8_cost = estimate_message_tokens(user_message_content)
-    remaining -= l8_cost + estimate_tokens(l1) + estimate_tokens(l2)
-    included.append("system")  # L1
-    included.append("project_instructions")  # L2
+    remaining -= (
+        estimate_message_tokens(user_message_content)
+        + estimate_tokens(l1)
+        + estimate_tokens(l2)
+    )
     if remaining < 0:
         raise ProviderError(
             "CONTEXT_TOO_LARGE",
@@ -289,46 +296,68 @@ async def build(
     l3, l3_trimmed = _fit_or_truncate(l3_raw, min(remaining, cap))
     if l3:
         remaining -= estimate_tokens(l3)
-        if has_status:
-            included.append("project_status")
-        if has_active:
-            included.append("active_task")
         if l3_trimmed:
             omitted.append({"type": "status", "trimmed": True})
-
     l4, l4_trimmed = _fit_or_truncate(l4_raw, min(max(remaining, 0), cap))
     if l4:
         remaining -= estimate_tokens(l4)
-        included.append(f"decisions:{len(decisions)}")
         if l4_trimmed:
             omitted.append({"type": "decisions", "trimmed": True})
 
-    # 3. Guarantee a floor for L7 (recent chronological turns): newest-first
-    #    selection up to 60% of the remaining budget.
+    # 3. Guarantee a floor for L7 (recent chronological turns after the summary
+    #    cutoff): newest-first selection up to 60% of the remaining budget.
     recent_budget = int(max(remaining, 0) * _RECENT_FLOOR_FRACTION)
     selected_recent, dropped_recent = _select_newest(history, recent_budget)
     remaining -= sum(estimate_message_tokens(m.content) for m in selected_recent)
-    if selected_recent:
-        included.append(f"recent_messages:{len(selected_recent)}")
     for m in dropped_recent:
         omitted.append(
             {"type": "recent_message", "sequence_no": m.sequence_no, "role": m.role}
         )
 
-    # 4. Fill remaining space with L6 (older-history summary) then L5 (file
-    #    excerpts). Both are empty hooks until Phases 7 and 9 respectively.
-    l6 = ""  # Phase 7: compact older-history summary
-    l5 = ""  # Phase 9: retrieved file excerpts
+    # 4. Fill remaining space with L6 (older-history summary) then L5 (files).
+    l6, l6_trimmed = _fit_or_truncate(l6_raw, int(max(remaining, 0) * _SUMMARY_FRACTION))
+    if l6:
+        remaining -= estimate_tokens(l6)
+        if l6_trimmed:
+            omitted.append(
+                {"type": "summary", "trimmed": True, "version": summary.version if summary else None}
+            )
 
-    # Compose the final artifacts. system_prompt = L1+L2+L3+L4+L5+L6.
+    # Compose artifacts. system_prompt = L1+L2+L3+L4+L5+L6.
     system_prompt = _compose_system_prompt([l1, l2, l3, l4, l5, l6])
     messages = _format_with_provenance(selected_recent, target_provider) + [
         CanonicalMessage(role="user", content=user_message_content)
     ]
-
     estimated_input_tokens = estimate_tokens(system_prompt) + sum(
         estimate_message_tokens(m.content) for m in messages
     )
+
+    # Audit layers + per-layer token estimates, in canonical (L1->L7) order.
+    included: list[str] = ["system", "project_instructions"]
+    layer_tokens: dict[str, int] = {
+        "system": estimate_tokens(l1),
+        "project_instructions": estimate_tokens(l2),
+    }
+    if l3 and status_text:
+        included.append("project_status")
+        layer_tokens["project_status"] = estimate_tokens(status_text)
+    if l3 and active_text:
+        included.append("active_task")
+        layer_tokens["active_task"] = estimate_tokens(active_text)
+    if l4:
+        key = f"decisions:{len(decisions)}"
+        included.append(key)
+        layer_tokens[key] = estimate_tokens(l4)
+    if l6 and summary is not None:
+        key = f"summary:v{summary.version}"
+        included.append(key)
+        layer_tokens[key] = estimate_tokens(l6)
+    if selected_recent:
+        key = f"recent_messages:{len(selected_recent)}"
+        included.append(key)
+        layer_tokens[key] = sum(
+            estimate_message_tokens(m.content) for m in selected_recent
+        )
 
     provider_request = ProviderRequest(
         model_id=target_model_id,
@@ -347,6 +376,7 @@ async def build(
         omitted_items=omitted,
         system_prompt=system_prompt,
         recent_message_count=len(selected_recent),
+        layer_tokens=layer_tokens,
     )
 
     if persist:

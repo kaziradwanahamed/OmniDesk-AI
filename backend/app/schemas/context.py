@@ -34,6 +34,8 @@ class ContextPreviewOut(BaseModel):
     token_budget: int
     estimated_input_tokens: int
     included_layers: list[str]
+    # Per-layer estimated token counts (e.g. {"summary:v2": 410, "recent_messages:6": 820}).
+    layer_tokens: dict[str, int]
     omitted_items: list[dict]
     recent_message_count: int
     system_prompt: str

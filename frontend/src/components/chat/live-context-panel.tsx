@@ -2,25 +2,47 @@
 
 import * as React from "react";
 import { useEffect, useState } from "react";
-import { Check, Layers, Loader2, NotebookPen, Pin } from "lucide-react";
-import { api } from "@/lib/api-client";
-import type { ContextPreview, Project, ProjectInstructions } from "@/lib/types";
+import {
+  Check,
+  Layers,
+  Loader2,
+  NotebookPen,
+  Pencil,
+  Pin,
+  RefreshCw,
+  Sparkles,
+} from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { api, ApiError } from "@/lib/api-client";
+import type {
+  ContextPreview,
+  Project,
+  ProjectInstructions,
+  SummaryStatus,
+} from "@/lib/types";
 
 function Section({
   icon: Icon,
   title,
+  action,
   children,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   title: string;
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <section className="border-b border-subtle px-4 py-4">
-      <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold tracking-wide text-tertiary uppercase">
-        <Icon className="h-3.5 w-3.5" />
-        {title}
-      </h3>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h3 className="flex items-center gap-1.5 text-xs font-semibold tracking-wide text-tertiary uppercase">
+          <Icon className="h-3.5 w-3.5" />
+          {title}
+        </h3>
+        {action}
+      </div>
       {children}
     </section>
   );
@@ -45,9 +67,23 @@ function layerLabel(key: string): string {
 
 function omittedLabel(item: Record<string, unknown>): string {
   if (item.type === "recent_message") return `Older turn #${item.sequence_no}`;
+  if (item.type === "summary") return "Summary (trimmed to fit budget)";
   if (item.type === "decisions") return "Decisions (trimmed to fit budget)";
   if (item.type === "status") return "Project status (trimmed to fit budget)";
   return String(item.type ?? "item");
+}
+
+function formatDate(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
 }
 
 export function LiveContextPanel({
@@ -59,32 +95,99 @@ export function LiveContextPanel({
   project: Project | null;
   instructions: ProjectInstructions | null;
   conversationId: string;
-  /** Bump to refetch the preview (e.g. after a send or a model switch). */
+  /** Bump to refetch (e.g. after a send or a model switch). */
   refreshKey?: number;
 }) {
   const [preview, setPreview] = useState<ContextPreview | null>(null);
   const [loading, setLoading] = useState(true);
+  const [summaryStatus, setSummaryStatus] = useState<SummaryStatus | null>(null);
+
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [working, setWorking] = useState(false);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+
+  async function reload() {
+    const [p, s] = await Promise.allSettled([
+      api.getContextPreview(conversationId),
+      api.getSummary(conversationId),
+    ]);
+    setPreview(p.status === "fulfilled" ? p.value : null);
+    setSummaryStatus(s.status === "fulfilled" ? s.value : null);
+  }
 
   useEffect(() => {
     let active = true;
     (async () => {
       setLoading(true);
-      try {
-        const p = await api.getContextPreview(conversationId);
-        if (active) setPreview(p);
-      } catch {
-        if (active) setPreview(null);
-      } finally {
-        if (active) setLoading(false);
-      }
+      setEditing(false);
+      setSummaryError(null);
+      const [p, s] = await Promise.allSettled([
+        api.getContextPreview(conversationId),
+        api.getSummary(conversationId),
+      ]);
+      if (!active) return;
+      setPreview(p.status === "fulfilled" ? p.value : null);
+      setSummaryStatus(s.status === "fulfilled" ? s.value : null);
+      setLoading(false);
     })();
     return () => {
       active = false;
     };
   }, [conversationId, refreshKey]);
 
+  const summary = summaryStatus?.summary ?? null;
+
+  async function refreshSummary() {
+    setWorking(true);
+    setSummaryError(null);
+    try {
+      setSummaryStatus(await api.refreshSummary(conversationId));
+      await reload();
+    } catch (e) {
+      setSummaryError(
+        e instanceof ApiError
+          ? `${e.category ? e.category.replaceAll("_", " ") + ": " : ""}${e.message}`
+          : "Could not generate summary.",
+      );
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function saveSummary() {
+    setWorking(true);
+    setSummaryError(null);
+    try {
+      await api.editSummary(conversationId, draft);
+      setEditing(false);
+      await reload();
+    } catch (e) {
+      setSummaryError(e instanceof ApiError ? e.message : "Could not save summary.");
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function clearSummary() {
+    setWorking(true);
+    setSummaryError(null);
+    try {
+      await api.clearSummary(conversationId);
+      await reload();
+    } catch (e) {
+      setSummaryError(e instanceof ApiError ? e.message : "Could not clear summary.");
+    } finally {
+      setWorking(false);
+    }
+  }
+
   const pct = preview
     ? Math.min(100, Math.round((preview.estimatedInputTokens / preview.tokenBudget) * 100))
+    : 0;
+  const summarized = Boolean(summary);
+  const trimmedCount = preview
+    ? preview.omittedItems.filter((o) => o.type === "recent_message").length
     : 0;
 
   return (
@@ -104,11 +207,6 @@ export function LiveContextPanel({
               {project.description ? (
                 <p className="mt-1 text-sm text-secondary">{project.description}</p>
               ) : null}
-              {project.goals ? (
-                <p className="mt-2 text-xs text-tertiary">
-                  <span className="font-medium">Goals:</span> {project.goals}
-                </p>
-              ) : null}
             </>
           ) : (
             <p className="text-sm text-tertiary">—</p>
@@ -122,22 +220,137 @@ export function LiveContextPanel({
           }
         >
           {instructions ? (
-            <>
-              <p className="text-sm leading-relaxed text-secondary">
-                {instructions.content}
-              </p>
-              {instructions.responseStyle ? (
-                <p className="mt-2 text-xs text-tertiary">
-                  <span className="font-medium">Style:</span>{" "}
-                  {instructions.responseStyle}
-                </p>
-              ) : null}
-            </>
+            <p className="text-sm leading-relaxed text-secondary">
+              {instructions.content}
+            </p>
           ) : (
             <p className="text-sm text-tertiary">
               No instructions set yet. Add them in Memory &amp; Instructions.
             </p>
           )}
+        </Section>
+
+        {/* L6 — rolling conversation summary */}
+        <Section
+          icon={Sparkles}
+          title={summary ? `Summary (v${summary.version})` : "Summary"}
+          action={
+            <div className="flex items-center gap-1">
+              {summary ? (
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label="Edit summary"
+                  disabled={working}
+                  onClick={() => {
+                    setDraft(summary.content);
+                    setEditing((v) => !v);
+                  }}
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </Button>
+              ) : null}
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label="Generate or refresh summary"
+                disabled={working}
+                onClick={refreshSummary}
+              >
+                {working ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" />
+                )}
+              </Button>
+            </div>
+          }
+        >
+          {editing && summary ? (
+            <div className="space-y-2">
+              <Textarea
+                rows={6}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+              />
+              <div className="flex justify-end gap-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={working}
+                  onClick={() => setEditing(false)}
+                >
+                  Cancel
+                </Button>
+                <Button size="sm" disabled={working || !draft.trim()} onClick={saveSummary}>
+                  {working ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                  Save
+                </Button>
+              </div>
+            </div>
+          ) : summary ? (
+            <>
+              <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+                <Badge
+                  className={
+                    summary.userEdited
+                      ? "border-accent/40 text-accent"
+                      : "border-subtle text-tertiary"
+                  }
+                >
+                  {summary.userEdited
+                    ? "User-edited"
+                    : `AI · ${summary.provider ?? "model"}`}
+                </Badge>
+                <span className="text-[11px] text-tertiary">
+                  Covers {summary.coveredMessageCount} msgs · {formatDate(summary.updatedAt)}
+                </span>
+              </div>
+              <p className="text-sm leading-relaxed whitespace-pre-wrap text-secondary">
+                {summary.content}
+              </p>
+              <button
+                type="button"
+                onClick={clearSummary}
+                disabled={working}
+                className="mt-2 text-[11px] text-tertiary underline-offset-2 hover:text-danger hover:underline disabled:opacity-50"
+              >
+                Clear summary
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-tertiary">
+                No summary yet. Older turns are sent in full.
+              </p>
+              {summaryStatus?.needsSummary ? (
+                <div className="mt-2 flex items-start gap-2 rounded-lg border border-info/30 bg-info/10 p-2.5 text-xs text-secondary">
+                  <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-info" />
+                  <span>
+                    {summaryStatus.unsummarizedCount} messages are unsummarized.
+                    Generate a rolling summary to keep context tight.
+                  </span>
+                </div>
+              ) : null}
+              <Button
+                size="sm"
+                variant="secondary"
+                className="mt-2"
+                disabled={working}
+                onClick={refreshSummary}
+              >
+                {working ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Sparkles className="h-4 w-4" />
+                )}
+                Generate summary
+              </Button>
+            </>
+          )}
+          {summaryError ? (
+            <p className="mt-2 text-xs text-danger">{summaryError}</p>
+          ) : null}
         </Section>
 
         <Section icon={Layers} title="Token Budget">
@@ -164,18 +377,28 @@ export function LiveContextPanel({
                 {preview.includedLayers.map((layer) => (
                   <li
                     key={layer}
-                    className="flex items-center gap-1.5 text-xs text-secondary"
+                    className="flex items-center justify-between gap-2 text-xs"
                   >
-                    <Check className="h-3 w-3 shrink-0 text-success" />
-                    {layerLabel(layer)}
+                    <span className="flex items-center gap-1.5 text-secondary">
+                      <Check className="h-3 w-3 shrink-0 text-success" />
+                      {layerLabel(layer)}
+                    </span>
+                    <span className="font-mono text-tertiary">
+                      ~{(preview.layerTokens[layer] ?? 0).toLocaleString()}
+                    </span>
                   </li>
                 ))}
               </ul>
+              <p className="mt-2 text-[11px] text-tertiary">
+                {summarized
+                  ? "Older turns are compacted into the summary (L6)."
+                  : trimmedCount > 0
+                    ? `${trimmedCount} older turn(s) trimmed to fit the budget.`
+                    : "All turns fit; nothing trimmed."}
+              </p>
               {preview.omittedItems.length ? (
-                <div className="mt-3 rounded-lg border border-subtle bg-canvas px-3 py-2">
-                  <p className="text-xs font-medium text-tertiary">
-                    Excluded this turn
-                  </p>
+                <div className="mt-2 rounded-lg border border-subtle bg-canvas px-3 py-2">
+                  <p className="text-xs font-medium text-tertiary">Excluded this turn</p>
                   <ul className="mt-1 space-y-0.5">
                     {preview.omittedItems.map((item, i) => (
                       <li key={i} className="text-xs text-tertiary">
@@ -185,15 +408,12 @@ export function LiveContextPanel({
                   </ul>
                 </div>
               ) : null}
-              <p className="mt-3 text-[11px] text-tertiary">
-                Estimated client-side budget. Rolling summaries (layer 6) and file
-                excerpts (layer 5) arrive in Phases 7 and 9.
+              <p className="mt-2 text-[11px] text-tertiary">
+                Conservative estimate. File excerpts (layer 5) arrive in Phase 9.
               </p>
             </>
           ) : (
-            <p className="text-sm text-tertiary">
-              Context preview unavailable.
-            </p>
+            <p className="text-sm text-tertiary">Context preview unavailable.</p>
           )}
         </Section>
       </div>
