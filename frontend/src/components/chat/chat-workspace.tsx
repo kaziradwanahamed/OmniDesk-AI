@@ -4,9 +4,14 @@ import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Loader2, X } from "lucide-react";
 import { ChatTopBar } from "./chat-top-bar";
 import { MessageTimeline } from "./message-timeline";
-import { ChatComposer } from "./chat-composer";
+import {
+  ChatComposer,
+  type ModelOption,
+  type ModelSelection,
+} from "./chat-composer";
 import { LiveContextPanel } from "./live-context-panel";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { PROVIDERS } from "@/lib/providers";
 import { useConversations } from "@/components/conversations/conversations-provider";
 import { useProjects } from "@/components/projects/projects-provider";
 import { api, ApiError } from "@/lib/api-client";
@@ -52,6 +57,13 @@ export function ChatWorkspace({
   const [instructions, setInstructions] = useState<ProjectInstructions | null>(
     null,
   );
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([
+    { provider: "stub", label: "Stub", models: ["stub-echo"] },
+  ]);
+  const [selection, setSelection] = useState<ModelSelection>({
+    provider: "stub",
+    modelId: "stub-echo",
+  });
 
   const conversation = conversations.find((c) => c.id === conversationId) ?? null;
   const project = projects.find((p) => p.id === projectId) ?? null;
@@ -91,6 +103,32 @@ export function ChatWorkspace({
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const providers = await api.listProviders();
+        const opts: ModelOption[] = [
+          { provider: "stub", label: "Stub", models: ["stub-echo"] },
+        ];
+        for (const p of providers) {
+          if (p.configured && p.enabledModels.length) {
+            const label =
+              (PROVIDERS as Record<string, { label: string }>)[p.provider]
+                ?.label ?? p.provider;
+            opts.push({ provider: p.provider, label, models: p.enabledModels });
+          }
+        }
+        if (active) setModelOptions(opts);
+      } catch {
+        /* ignore — stub remains available */
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const inspectorOpen = isDesktop ? desktopInspector : mobileInspector;
   function toggleInspector() {
     if (isDesktop) setDesktopInspector((v) => !v);
@@ -102,6 +140,8 @@ export function ChatWorkspace({
       const { userMessage, assistantMessage } = await api.sendMessage(
         conversationId,
         text,
+        selection.provider,
+        selection.modelId,
       );
       setMessages((prev) => [...prev, userMessage, assistantMessage]);
       setSendError(null);
@@ -217,7 +257,12 @@ export function ChatWorkspace({
           </div>
         ) : null}
 
-        <ChatComposer onSend={handleSend} />
+        <ChatComposer
+          onSend={handleSend}
+          options={modelOptions}
+          selection={selection}
+          onSelect={setSelection}
+        />
       </div>
 
       {desktopInspector ? (

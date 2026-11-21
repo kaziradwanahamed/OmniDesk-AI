@@ -13,6 +13,7 @@ from app.adapters.base import (
     ProviderError,
     ProviderRequest,
     ProviderResponse,
+    StreamChunk,
 )
 
 STUB_MODEL_ID = "stub-echo"
@@ -38,3 +39,20 @@ class StubEchoAdapter(BaseProviderAdapter):
             content=reply,
             usage=NormalizedUsage(),  # no fabricated token counts
         )
+
+    async def stream(self, req: ProviderRequest, api_key: str | None = None):
+        last_user = next(
+            (m.content for m in reversed(req.messages) if m.role == "user"), ""
+        )
+        if last_user.strip() == "__fail__":
+            raise ProviderError(
+                "MODEL_UNAVAILABLE", "Simulated stub adapter failure."
+            )
+        reply = f"[stub-echo] You said: {last_user}"
+        words = reply.split(" ")
+        for i, word in enumerate(words):
+            yield StreamChunk(delta_text=word if i == len(words) - 1 else word + " ")
+        yield StreamChunk(is_final=True, usage=NormalizedUsage())
+
+    async def list_models(self, api_key: str | None = None) -> list[str]:
+        return [STUB_MODEL_ID]

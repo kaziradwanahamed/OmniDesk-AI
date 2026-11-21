@@ -1,15 +1,18 @@
-"""Conversation detail endpoints and message list/send (owner-enforced)."""
+"""Conversation detail endpoints and message list/send/stream (owner-enforced)."""
 
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.base import ProviderError
-from app.api.deps import require_conversation_owner, require_csrf
+from app.api.deps import get_current_user, require_conversation_owner, require_csrf
 from app.db.session import get_db
 from app.models.conversation import Conversation
+from app.models.user import User
 from app.schemas.conversation import (
     ConversationOut,
     ConversationRename,
@@ -72,14 +75,14 @@ async def list_messages(
 async def send_message(
     data: MessageSendIn,
     conversation: Conversation = Depends(require_conversation_owner),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     try:
         user_msg, assistant_msg = await conversation_service.send_message(
-            db, conversation, data.content, data.provider, data.model_id
+            db, conversation, data.content, user.id, data.provider, data.model_id
         )
     except ProviderError as err:
-        # The user message + prior history are already committed and intact.
         return JSONResponse(
             status_code=status.HTTP_502_BAD_GATEWAY,
             content={
@@ -91,4 +94,31 @@ async def send_message(
     return MessageSendOut(
         user_message=MessageOut.model_validate(user_msg),
         assistant_message=MessageOut.model_validate(assistant_msg),
+    )
+
+
+@router.post(
+    "/{conversation_id}/messages/stream",
+    dependencies=[Depends(require_csrf)],
+)
+async def stream_message(
+    data: MessageSendIn,
+    conversation: Conversation = Depends(require_conversation_owner),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    async def event_source():
+        async for event, payload in conversation_service.stream_message(
+            db, conversation, data.content, user.id, data.provider, data.model_id
+        ):
+            yield f"event: {event}\ndata: {json.dumps(payload)}\n\n"
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )

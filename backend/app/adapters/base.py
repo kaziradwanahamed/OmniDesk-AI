@@ -8,6 +8,7 @@ streaming interface and the real OpenAI/Gemini/Anthropic adapters.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -56,6 +57,15 @@ class ProviderResponse:
     finish_reason: str | None = None
 
 
+@dataclass(frozen=True)
+class StreamChunk:
+    delta_text: str = ""
+    is_final: bool = False
+    usage: NormalizedUsage | None = None
+    provider_request_id: str | None = None
+    finish_reason: str | None = None
+
+
 class ProviderError(Exception):
     """Normalized provider failure with a UI-facing category and message."""
 
@@ -79,4 +89,16 @@ class BaseProviderAdapter(ABC):
         self, req: ProviderRequest, api_key: str | None
     ) -> ProviderResponse:
         """Produce a single, non-streaming response."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def stream(
+        self, req: ProviderRequest, api_key: str | None
+    ) -> AsyncIterator[StreamChunk]:
+        """Yield streaming chunks; the final chunk carries usage when available."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_models(self, api_key: str | None) -> list[str]:
+        """Return the model IDs available to this credential (verified, not invented)."""
         raise NotImplementedError

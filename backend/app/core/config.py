@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     cookie_secure: bool = False  # set true in production (HTTPS)
     cookie_samesite: str = "lax"
 
+    # --- Provider key encryption ---
+    # Fernet key (generate: python -c "from cryptography.fernet import Fernet;
+    # print(Fernet.generate_key().decode())"). Encrypts stored provider API keys.
+    omnidesk_master_key: str
+    # Optional server-default OpenAI key (fallback when a user has none configured).
+    openai_api_key: str | None = None
+
     @property
     def cors_origins(self) -> list[str]:
         """CORS origins as a cleaned list."""

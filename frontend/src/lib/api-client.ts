@@ -225,6 +225,80 @@ function mapMessage(m: ApiMessage): ChatMessage {
   };
 }
 
+interface ApiProviderConfig {
+  provider: string;
+  configured: boolean;
+  key_hint: string | null;
+  enabled_models: string[];
+  is_enabled: boolean;
+}
+interface ApiUsageSummary {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  by_model: {
+    provider: string;
+    model_id: string | null;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    request_count: number;
+  }[];
+}
+
+export interface ProviderConfigUI {
+  provider: string;
+  configured: boolean;
+  keyHint: string | null;
+  enabledModels: string[];
+  isEnabled: boolean;
+}
+export interface TestConnectionResult {
+  ok: boolean;
+  models: string[];
+  category: string | null;
+  message: string | null;
+}
+export interface UsageByModelUI {
+  provider: string;
+  modelId: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  requestCount: number;
+}
+export interface UsageSummaryUI {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  byModel: UsageByModelUI[];
+}
+
+function mapProviderConfig(c: ApiProviderConfig): ProviderConfigUI {
+  return {
+    provider: c.provider,
+    configured: c.configured,
+    keyHint: c.key_hint,
+    enabledModels: c.enabled_models,
+    isEnabled: c.is_enabled,
+  };
+}
+function mapUsage(u: ApiUsageSummary): UsageSummaryUI {
+  return {
+    inputTokens: u.input_tokens,
+    outputTokens: u.output_tokens,
+    totalTokens: u.total_tokens,
+    byModel: u.by_model.map((m) => ({
+      provider: m.provider,
+      modelId: m.model_id,
+      inputTokens: m.input_tokens,
+      outputTokens: m.output_tokens,
+      totalTokens: m.total_tokens,
+      requestCount: m.request_count,
+    })),
+  };
+}
+
 export interface ProjectInput {
   name?: string;
   description?: string;
@@ -369,5 +443,43 @@ export const api = {
       userMessage: mapMessage(res.user_message),
       assistantMessage: mapMessage(res.assistant_message),
     };
+  },
+
+  // --- providers & usage ---
+  async listProviders(): Promise<ProviderConfigUI[]> {
+    return (await request<ApiProviderConfig[]>("GET", "/providers")).map(
+      mapProviderConfig,
+    );
+  },
+  async setProviderKey(
+    provider: string,
+    apiKey: string,
+  ): Promise<ProviderConfigUI> {
+    return mapProviderConfig(
+      await request<ApiProviderConfig>("PUT", `/providers/${provider}/key`, {
+        api_key: apiKey,
+      }),
+    );
+  },
+  async deleteProviderKey(provider: string): Promise<ProviderConfigUI> {
+    return mapProviderConfig(
+      await request<ApiProviderConfig>("DELETE", `/providers/${provider}/key`),
+    );
+  },
+  async testProvider(provider: string): Promise<TestConnectionResult> {
+    return request<TestConnectionResult>("POST", `/providers/${provider}/test`);
+  },
+  async setEnabledModels(
+    provider: string,
+    models: string[],
+  ): Promise<ProviderConfigUI> {
+    return mapProviderConfig(
+      await request<ApiProviderConfig>("PUT", `/providers/${provider}/models`, {
+        enabled_models: models,
+      }),
+    );
+  },
+  async getUsage(): Promise<UsageSummaryUI> {
+    return mapUsage(await request<ApiUsageSummary>("GET", "/usage"));
   },
 };

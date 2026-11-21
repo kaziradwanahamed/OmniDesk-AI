@@ -8,6 +8,7 @@ from app.models.project import (
     ProjectInstruction,
     ProjectTask,
 )
+from app.models.provider_config import ProviderConfig, UsageRecord
 from app.models.user import User
 
 __all__ = [
@@ -19,4 +20,6 @@ __all__ = [
     "ProjectTask",
     "Conversation",
     "Message",
+    "ProviderConfig",
+    "UsageRecord",
 ]
